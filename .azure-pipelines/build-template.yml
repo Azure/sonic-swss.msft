@@ -111,77 +111,36 @@ jobs:
     inputs:
       source: specific
       project: build
-      pipeline: Azure.sonic-swss-common
-      artifact: ${{ parameters.swss_common_artifact_name }}
+      pipeline: Azure.sonic-buildimage-msft.PR
+      artifact: sonic-buildimage.vs
       runVersion: 'latestFromBranch'
-      runBranch: 'refs/heads/${{ parameters.swss_common_branch }}'
-      allowPartiallySucceededBuilds: true
-      path: $(Build.ArtifactStagingDirectory)/download/swsscommon
+      runBranch: 'refs/heads/202412'
+      # allowPartiallySucceededBuilds: true
+      path: $(Build.ArtifactStagingDirectory)/download
       patterns: |
-        libswsscommon_1.0.0_${{ parameters.arch }}.deb
-        libswsscommon-dev_1.0.0_${{ parameters.arch }}.deb
-    displayName: "Download sonic swss common deb packages"
-  - task: DownloadPipelineArtifact@2
-    inputs:
-      source: specific
-      project: ${{ parameters.sairedis_artifact_project }}
-      pipeline: ${{ parameters.sairedis_artifact_pipeline }}
-      artifact: ${{ parameters.sairedis_artifact_name }}
-      runVersion: 'latestFromBranch'
-      runBranch: 'refs/heads/${{ parameters.sairedis_artifact_branch }}'
-      allowPartiallySucceededBuilds: true
-      path: $(Build.ArtifactStagingDirectory)/download/sairedis
-      patterns: |
-        ${{ parameters.sairedis_artifact_pattern }}/libsaivs_*.deb
-        ${{ parameters.sairedis_artifact_pattern }}/libsaivs-dev_*.deb
-        ${{ parameters.sairedis_artifact_pattern }}/libsairedis_*.deb
-        ${{ parameters.sairedis_artifact_pattern }}/libsairedis-dev_*.deb
-        ${{ parameters.sairedis_artifact_pattern }}/libsaimetadata_*.deb
-        ${{ parameters.sairedis_artifact_pattern }}/libsaimetadata-dev_*.deb
-        ${{ parameters.sairedis_artifact_pattern }}/syncd-vs_*.deb
-    displayName: "Download sonic sairedis deb packages"
-  - task: DownloadPipelineArtifact@2
-    inputs:
-      source: specific
-      project: ${{ parameters.common_lib_artifact_project }}
-      pipeline: ${{ parameters.common_lib_artifact_pipeline }}
-      artifact: ${{ parameters.common_lib_artifact_name }}
-      runVersion: 'latestFromBranch'
-      runBranch: 'refs/heads/${{ parameters.common_lib_artifact_branch }}'
-      path: $(Build.ArtifactStagingDirectory)/download/common
-      patterns: |
-        target/debs/bookworm/libnl-3-200_*.deb
-        target/debs/bookworm/libnl-3-dev_*.deb
-        target/debs/bookworm/libnl-genl-3-200_*.deb
-        target/debs/bookworm/libnl-genl-3-dev_*.deb
-        target/debs/bookworm/libnl-route-3-200_*.deb
-        target/debs/bookworm/libnl-route-3-dev_*.deb
-        target/debs/bookworm/libnl-nf-3-200_*.deb
-        target/debs/bookworm/libnl-nf-3-dev_*.deb
-        target/debs/bookworm/libyang_*.deb
-    displayName: "Download common libs"
-  - task: DownloadPipelineArtifact@2
-    inputs:
-      source: specific
-      project: build
-      pipeline: sonic-net.sonic-dash-api
-      ${{ if eq(parameters.arch, 'amd64') }}:
-        artifact: sonic-dash-api
-      ${{ else }}:
-        artifact: sonic-dash-api.${{ parameters.arch }}
-      runVersion: 'latestFromBranch'
-      runBranch: 'refs/heads/$(BUILD_BRANCH)'
-      path: $(Build.ArtifactStagingDirectory)/download/common
-      patterns: |
-        libdashapi*.deb
-    displayName: "Download dash api"
+        **/bookworm/libswsscommon_1.0.0_${{ parameters.arch }}.deb
+        **/bookworm/libswsscommon-dev_1.0.0_${{ parameters.arch }}.deb
+        **/bookworm/libsaivs_*.deb
+        **/bookworm/libsaivs-dev_*.deb
+        **/bookworm/libsairedis_*.deb
+        **/bookworm/libsairedis-dev_*.deb
+        **/bookworm/libsaimetadata_*.deb
+        **/bookworm/libsaimetadata-dev_*.deb
+        **/bookworm/syncd-vs_*.deb
+        **/bookworm/libnl-3-200_*.deb
+        **/bookworm/libnl-3-dev_*.deb
+        **/bookworm/libnl-genl-3-200_*.deb
+        **/bookworm/libnl-genl-3-dev_*.deb
+        **/bookworm/libnl-route-3-200_*.deb
+        **/bookworm/libnl-route-3-dev_*.deb
+        **/bookworm/libnl-nf-3-200_*.deb
+        **/bookworm/libnl-nf-3-dev_*.deb
+        **/bookworm/libyang_*.deb
+        **/bookworm/libdashapi*.deb
+    displayName: "Download dependencies"
   - script: |
       set -ex
-      cd download
-      sudo dpkg -i $(find common -type f -name '*.deb')
-      sudo dpkg -i $(find swsscommon -type f -name '*.deb')
-      sudo dpkg -i $(find sairedis -type f -name '*.deb')
-      cd ..
+      sudo dpkg -i $(find download -type f -name '*.deb')
       rm -rf download
     workingDirectory: $(Build.ArtifactStagingDirectory)
     displayName: "Install libnl3, sonic swss common and sairedis"
