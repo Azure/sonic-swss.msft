@@ -1187,7 +1187,7 @@ namespace portsorch_test
         std::deque<KeyOpFieldsValuesTuple> kfvBasic = {{
             "Ethernet0",
             SET_COMMAND, {
-                { "speed",               "1000"            },
+                { "speed",               "100000"            },
                 { "fec",                 "rs"                },
                 { "mtu",                 "9100"              },
                 { "admin_status",        "up"                }
