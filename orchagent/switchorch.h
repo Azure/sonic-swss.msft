@@ -3,6 +3,7 @@
 #include "acltable.h"
 #include "orch.h"
 #include "timer.h"
+#include "flex_counter/flex_counter_manager.h"
 #include "switch/switch_capabilities.h"
 #include "switch/switch_helper.h"
 #include "switch/trimming/capabilities.h"
@@ -24,6 +25,8 @@
 #define SWITCH_CAPABILITY_TABLE_REG_FATAL_ASIC_SDK_HEALTH_CATEGORY     "REG_FATAL_ASIC_SDK_HEALTH_CATEGORY"
 #define SWITCH_CAPABILITY_TABLE_REG_WARNING_ASIC_SDK_HEALTH_CATEGORY   "REG_WARNING_ASIC_SDK_HEALTH_CATEGORY"
 #define SWITCH_CAPABILITY_TABLE_REG_NOTICE_ASIC_SDK_HEALTH_CATEGORY    "REG_NOTICE_ASIC_SDK_HEALTH_CATEGORY"
+
+#define SWITCH_STAT_COUNTER_FLEX_COUNTER_GROUP "SWITCH_STAT_COUNTER"
 
 struct WarmRestartCheck
 {
@@ -70,6 +73,9 @@ public:
     bool bindAclTableToSwitch(acl_stage_type_t stage, sai_object_id_t table_id);
     bool unbindAclTableFromSwitch(acl_stage_type_t stage, sai_object_id_t table_id);
 
+    // Statistics
+    void generateSwitchCounterIdList();
+
 private:
     void doTask(Consumer &consumer);
     void doTask(swss::SelectableTimer &timer);
@@ -81,6 +87,9 @@ private:
     void initSensorsTable();
     void querySwitchTpidCapability();
     void querySwitchPortEgressSampleCapability();
+
+    // Statistics
+    void generateSwitchCounterNameMap() const;
 
     // Switch hash
     bool setSwitchHashFieldListSai(const SwitchHash &hash, bool isEcmpHash) const;
@@ -156,6 +165,10 @@ private:
             sai_object_id_t oid = SAI_NULL_OBJECT_ID;
         } lagHash;
     } m_switchHashDefaults;
+
+    // Statistics
+    FlexCounterManager m_counterManager;
+    bool m_isSwitchCounterIdListGenerated = false;
 
     // Information contained in the request from
     // external program for orchagent pre-shutdown state check
