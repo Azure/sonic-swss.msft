@@ -502,11 +502,6 @@ int main(int argc, char **argv)
         SWSS_LOG_NOTICE("ZMQ disabled");
     }
 
-    if (!initSystemInfo(config_db))
-    {
-        SWSS_LOG_ERROR("Failed to get system configuration");
-    }
-
     // Get switch_type
     getCfgSwitchType(&config_db, gMySwitchType);
 
