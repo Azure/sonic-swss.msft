@@ -818,27 +818,6 @@ bool MuxNbrHandler::enable(bool update_rt)
         /* Increment ref count for new NHs */
         gNeighOrch->increaseNextHopRefCount(nh_key, num_routes);
 
-        /*
-         * Invalidate current nexthop group and update with new NH
-         * Ref count update is not required for tunnel NH IDs (nh_removed)
-         */
-        uint32_t nh_removed, nh_added;
-        if (!gRouteOrch->invalidnexthopinNextHopGroup(nh_key, nh_removed))
-        {
-            SWSS_LOG_ERROR("Removing existing NH failed for %s", nh_key.ip_address.to_string().c_str());
-            return false;
-        }
-
-        if (!gRouteOrch->validnexthopinNextHopGroup(nh_key, nh_added))
-        {
-            SWSS_LOG_ERROR("Adding NH failed for %s", nh_key.ip_address.to_string().c_str());
-            return false;
-        }
-        SWSS_LOG_INFO("Adding NH for %s, nh_added: %u", nh_key.ip_address.to_string().c_str(), nh_added);
-
-        /* Increment ref count for ECMP NH members */
-        gNeighOrch->increaseNextHopRefCount(nh_key, nh_added);
-
         if (update_rt)
         {
             updateTunnelRoute(nh_key, false);
@@ -891,24 +870,6 @@ bool MuxNbrHandler::disable(sai_object_id_t tnh)
 
         /* Decrement ref count for old NHs */
         gNeighOrch->decreaseNextHopRefCount(nh_key, num_routes);
-
-        /* Invalidate current nexthop group and update with new NH */
-        uint32_t nh_removed, nh_added;
-        if (!gRouteOrch->invalidnexthopinNextHopGroup(nh_key, nh_removed))
-        {
-            SWSS_LOG_ERROR("Removing existing NH failed for %s", nh_key.ip_address.to_string().c_str());
-            return false;
-        }
-        SWSS_LOG_ERROR("Removing existing NH for %s, nh_removed: %u", nh_key.ip_address.to_string().c_str(), nh_removed);
-
-        /* Decrement ref count for ECMP NH members */
-        gNeighOrch->decreaseNextHopRefCount(nh_key, nh_removed);
-
-        if (!gRouteOrch->validnexthopinNextHopGroup(nh_key, nh_added))
-        {
-            SWSS_LOG_ERROR("Adding NH failed for %s", nh_key.ip_address.to_string().c_str());
-            return false;
-        }
 
         updateTunnelRoute(nh_key, true);
 
