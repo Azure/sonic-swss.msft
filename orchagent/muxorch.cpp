@@ -1406,6 +1406,12 @@ MuxCable* MuxOrch::findMuxCableInSubnet(IpAddress ip)
 
 bool MuxOrch::isMuxPortNeighbor(const IpAddress& nbr, const MacAddress& mac, string& alias)
 {
+    // skip neighbors are treated as MUX port neighbor
+    if (isSkipNeighbor(nbr))
+    {
+        return true;
+    }
+
     if (mux_cable_tb_.empty())
     {
         // Check cached neighbors during warm boot
