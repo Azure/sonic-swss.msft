@@ -663,7 +663,27 @@ void MuxCable::updateNeighbor(NextHopKey nh, bool add)
     SWSS_LOG_NOTICE("Processing update on neighbor %s for mux %s, add %d, state %d",
                      nh.ip_address.to_string().c_str(), mux_name_.c_str(), add, state_);
     sai_object_id_t tnh = mux_orch_->getNextHopTunnelId(MUX_TUNNEL, peer_ip4_);
-    nbr_handler_->update(nh, tnh, add, state_);
+    // For MUX cable state changes work only on MUX neigbors, prefix route check not needed
+    nbr_handler_->update(nh, tnh, add, state_, false);
+    if (add)
+    {
+        mux_orch_->addNexthop(nh, mux_name_);
+    }
+    else if (mux_name_ == mux_orch_->getNexthopMuxName(nh))
+    {
+        mux_orch_->removeNexthop(nh);
+    }
+    updateRoutes();
+}
+
+void MuxCable::updateNeighborFromEvent(NextHopKey nh, bool add)
+{
+    SWSS_LOG_NOTICE("Processing neighbor event update on neighbor %s for mux %s, add %d, state %d",
+                     nh.ip_address.to_string().c_str(), mux_name_.c_str(), add, state_);
+    sai_object_id_t tnh = mux_orch_->getNextHopTunnelId(MUX_TUNNEL, peer_ip4_);
+    // For neighbor events, check prefix route to avoid updating neighbors that got added without prefix route.
+    nbr_handler_->update(nh, tnh, add, state_, true);
+
     if (add)
     {
         mux_orch_->addNexthop(nh, mux_name_);
@@ -697,14 +717,14 @@ void MuxCable::updateRoutes()
     }
 }
 
-void MuxNbrHandler::update(NextHopKey nh, sai_object_id_t tunnelId, bool add, MuxState state)
+void MuxNbrHandler::update(NextHopKey nh, sai_object_id_t tunnelId, bool add, MuxState state, bool check_prefix_route)
 {
     uint32_t num_routes = 0;
     sai_status_t status;
     sai_object_id_t local_nhid = gNeighOrch->getLocalNextHopId(nh);
 
-    SWSS_LOG_INFO("Neigh %s on %s, add %d, state %d",
-                   nh.ip_address.to_string().c_str(), nh.alias.c_str(), add, state);
+    SWSS_LOG_INFO("Neigh %s on %s, add %d, state %d, check_prefix_route %d",
+                   nh.ip_address.to_string().c_str(), nh.alias.c_str(), add, state, check_prefix_route);
 
     IpPrefix pfx = nh.ip_address.to_string();
 
@@ -729,11 +749,20 @@ void MuxNbrHandler::update(NextHopKey nh, sai_object_id_t tunnelId, bool add, Mu
             neighbors_[nh.ip_address] = local_nhid;
 
             // muxorch neighbor uses full prefix route
-            // update the route with localnh
-            status = set_route(pfx, local_nhid);
-            if (status != SAI_STATUS_SUCCESS) {
-                SWSS_LOG_ERROR("Update Failed to set route entry %s to localnh",
-                        pfx.to_string().c_str());
+            // update the route with localnh if prefix route exists (when check_prefix_route is true)
+            if (!check_prefix_route || gNeighOrch->isPrefixNeighborNh(nh))
+            {
+                status = set_route(pfx, local_nhid);
+                if (status != SAI_STATUS_SUCCESS) {
+                    SWSS_LOG_ERROR("Update Failed to set route entry %s to localnh",
+                            pfx.to_string().c_str());
+                }
+            }
+            else
+            {
+                SWSS_LOG_INFO("Neighbor %s on %s is not a prefix neighbor, skipping route update",
+                              nh.ip_address.to_string().c_str(), nh.alias.c_str());
+
             }
 
             gRouteOrch->updateNextHopRoutes(nh, num_routes);
@@ -742,11 +771,20 @@ void MuxNbrHandler::update(NextHopKey nh, sai_object_id_t tunnelId, bool add, Mu
             neighbors_[nh.ip_address] = tunnelId;
 
             // muxorch neighbor uses full prefix route 
-            // update the route with tunnelid
-            status = set_route(pfx, tunnelId);
-            if (status != SAI_STATUS_SUCCESS) {
-                SWSS_LOG_ERROR("Update Failed to set route entry %s to tnh",
-                        pfx.to_string().c_str());
+            // update the route with tunnelid if prefix route exists (when check_prefix_route is true)
+            if (!check_prefix_route || gNeighOrch->isPrefixNeighborNh(nh))
+            {
+                status = set_route(pfx, tunnelId);
+                if (status != SAI_STATUS_SUCCESS) {
+                    SWSS_LOG_ERROR("Update Failed to set route entry %s to tnh",
+                            pfx.to_string().c_str());
+                }
+            }
+            else
+            {
+                SWSS_LOG_INFO("Neighbor %s on %s is not a prefix neighbor, skipping route update",
+                              nh.ip_address.to_string().c_str(), nh.alias.c_str());
+
             }
 
             updateTunnelRoute(nh, true);
@@ -1409,13 +1447,19 @@ bool MuxOrch::isMuxPortNeighbor(const IpAddress& nbr, const MacAddress& mac, str
     // skip neighbors are treated as MUX port neighbor
     if (isSkipNeighbor(nbr))
     {
+        SWSS_LOG_INFO("Skip neighbor %s treated as MUX port neighbor", nbr.to_string().c_str());
+        return true;
+    }
+
+    if (isCachedMuxNeighbor(nbr, alias))
+    {
         return true;
     }
 
     if (mux_cable_tb_.empty())
     {
         // Check cached neighbors during warm boot
-        return isCachedMuxNeighbor(nbr, alias);
+        return false;
     }
 
     MuxCable* ptr = findMuxCableInSubnet(nbr);
@@ -1429,7 +1473,7 @@ bool MuxOrch::isMuxPortNeighbor(const IpAddress& nbr, const MacAddress& mac, str
     if (!getMuxPort(mac, alias, port))
     {
         // Check cached neighbors during warm boot
-        return isCachedMuxNeighbor(nbr, alias);
+        return false;
     }
 
     if (!port.empty() && isMuxExists(port))
@@ -1444,8 +1488,7 @@ bool MuxOrch::isMuxPortNeighbor(const IpAddress& nbr, const MacAddress& mac, str
         return true;
     }
 
-    // Check cached neighbors during warm boot
-    return isCachedMuxNeighbor(nbr, alias);
+    return false;
 }
 
 bool MuxOrch::isNeighborActive(const IpAddress& nbr, const MacAddress& mac, string& alias)
@@ -1528,6 +1571,9 @@ void MuxOrch::updateFdb(const FdbUpdate& update)
     NeighborEntry neigh;
     MacAddress mac;
     MuxCable* ptr;
+    bool found_existing_mux_neighbor = false;
+
+    // Handle existing MUX neighbors that might be moving between ports
     for (auto nh = mux_nexthop_tb_.begin(); nh != mux_nexthop_tb_.end(); ++nh)
     {
         auto res = neigh_orch_->getNeighborEntry(nh->first, neigh, mac);
@@ -1535,6 +1581,8 @@ void MuxOrch::updateFdb(const FdbUpdate& update)
         {
             continue;
         }
+
+        found_existing_mux_neighbor = true;
 
         if (nh->second != update.entry.port_name)
         {
@@ -1556,6 +1604,87 @@ void MuxOrch::updateFdb(const FdbUpdate& update)
             }
         }
     }
+
+    // Handle case where neighbor exists but is not yet a MUX neighbor
+    // This can happen when FDB entry is learned after neighbor is added
+    if (!found_existing_mux_neighbor && isMuxExists(update.entry.port_name))
+    {
+        // Check if there's an existing neighbor with this MAC on any VLAN interface
+        // that could be converted to a MUX neighbor
+        PortsOrch* ports_orch = gDirectory.get<PortsOrch*>();
+        auto vlan_ports = ports_orch->getAllVlans();
+        SWSS_LOG_INFO("FDB upate without mux neighbor on mux port %s, mac %s", update.entry.port_name.c_str(),
+                update.entry.mac.to_string().c_str());
+
+        for (auto vlan_alias : vlan_ports)
+        {
+            NeighborEntry temp_neigh;
+            MacAddress temp_mac;
+
+            // Check all existing neighbors on this VLAN interface
+            auto neighbors = neigh_orch_->getNeighborTable();
+            for (const auto& neighbor_pair : neighbors)
+            {
+                const NeighborEntry& neighbor_entry = neighbor_pair.first;
+                const auto& neighbor_data = neighbor_pair.second;
+
+                // Skip if this neighbor is already a MUX neighbor
+                if (neighbor_data.prefix_route)
+                {
+                    continue;
+                }
+
+                // Check if MAC matches and it's on a VLAN interface
+                if (neighbor_data.mac == update.entry.mac && neighbor_entry.alias == vlan_alias)
+                {
+                    // Check if this neighbor should be a MUX neighbor based on the FDB update
+                    string port_name;
+                    if (getMuxPort(update.entry.mac, vlan_alias, port_name) && 
+                        !port_name.empty() && port_name == update.entry.port_name)
+                    {
+                        // Verify MUX cable exists and is properly configured before conversion
+                        ptr = getMuxCable(port_name);
+                        if (!ptr)
+                        {
+                            SWSS_LOG_WARN("MUX cable for port %s not found, skipping neighbor conversion", port_name.c_str());
+                            continue;
+                        }
+
+                        // Convert this neighbor to a MUX neighbor
+                        SWSS_LOG_INFO("Converting existing neighbor %s on %s to MUX neighbor due to FDB update",
+                                      neighbor_entry.ip_address.to_string().c_str(), vlan_alias.c_str());
+
+                        // Get tunnel nexthop if needed (for standby state)
+                        sai_object_id_t tunnel_nh_id = SAI_NULL_OBJECT_ID;
+                        if (!ptr->isActive())
+                        {
+                            tunnel_nh_id = getTunnelNextHopId();
+                        }
+
+                        // Convert to MUX neighbor
+                        if (neigh_orch_->convertToMuxNeighbor(neighbor_entry, tunnel_nh_id))
+                        {
+                            // Add to MUX nexthop table
+                            NextHopKey nh_key = { neighbor_entry.ip_address, neighbor_entry.alias };
+                            mux_nexthop_tb_[nh_key] = port_name;
+
+                            // Update MUX cable with the new neighbor
+                            ptr->updateNeighbor(neighbor_entry, true);
+
+                            SWSS_LOG_NOTICE("Successfully converted neighbor %s on %s to MUX neighbor",
+                                           neighbor_entry.ip_address.to_string().c_str(), vlan_alias.c_str());
+                        }
+                        else
+                        {
+                            SWSS_LOG_ERROR("Failed to convert neighbor %s on %s to MUX neighbor",
+                                         neighbor_entry.ip_address.to_string().c_str(), vlan_alias.c_str());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
 }
 
 void MuxOrch::updateNeighbor(const NeighborUpdate& update)
@@ -1606,9 +1735,17 @@ void MuxOrch::updateNeighbor(const NeighborUpdate& update)
         MuxCable* ptr = it->second.get();
         if (ptr->isIpInSubnet(update.entry.ip_address))
         {
-            ptr->updateNeighbor(update.entry, update.add);
+            ptr->updateNeighborFromEvent(update.entry, update.add);
             is_mux_neighbor = true;
-            goto handle_redis;
+            if (update.add)
+            {
+                saveNeighborToMuxTable(update.entry.ip_address, alias);
+            }
+            else
+            {
+                removeNeighborFromMuxTable(update.entry.ip_address, alias);
+            }
+            return;
         }
     }
 
@@ -1627,10 +1764,9 @@ void MuxOrch::updateNeighbor(const NeighborUpdate& update)
          */
         if (port.empty() || old_port == port)
         {
-            addNexthop(update.entry, old_port);
-            is_mux_neighbor = true;
-            goto handle_redis;
+            return;
         }
+        is_mux_neighbor = true;
 
         addNexthop(update.entry);
     }
@@ -1649,29 +1785,21 @@ void MuxOrch::updateNeighbor(const NeighborUpdate& update)
     if (!old_port.empty() && old_port != port && isMuxExists(old_port))
     {
         ptr = getMuxCable(old_port);
-        ptr->updateNeighbor(update.entry, false);
+        ptr->updateNeighborFromEvent(update.entry, false);
         addNexthop(update.entry);
     }
 
     if (!port.empty() && isMuxExists(port))
     {
         ptr = getMuxCable(port);
-        ptr->updateNeighbor(update.entry, update.add);
+        ptr->updateNeighborFromEvent(update.entry, update.add);
         is_mux_neighbor = true;
     }
 
-handle_redis:
     // Save MUX neighbors for warmboot
     if (is_mux_neighbor)
     {
-        if (update.add)
-        {
-            saveNeighborToMuxTable(update.entry.ip_address, alias);
-        }
-        else
-        {
-            removeNeighborFromMuxTable(update.entry.ip_address, alias);
-        }
+        saveNeighborToMuxTable(update.entry.ip_address, alias);
     }
 }
 
@@ -2052,34 +2180,6 @@ void MuxOrch::updateCachedNeighbors()
     }
 }
 
-void MuxOrch::saveMuxNeighbors()
-{
-    SWSS_LOG_NOTICE("Saving MUX neighbors to Redis");
-    
-    // Clear existing entries
-    mux_neighbors_table_->del("*");
-    
-    // Save current MUX neighbors
-    for (const auto& entry : cached_mux_neighbors_)
-    {
-        std::string key = entry.first.to_string() + "|" + entry.second;
-        std::vector<FieldValueTuple> values;
-        values.emplace_back("ip", entry.first.to_string());
-        values.emplace_back("alias", entry.second);
-        mux_neighbors_table_->set(key, values);
-    }
-    
-    SWSS_LOG_NOTICE("Saved %zu MUX neighbors to Redis", cached_mux_neighbors_.size());
-    
-    // Clear the in-memory cache after warm boot is complete
-    // The cache is no longer needed once MUX cables are operational
-    if (!mux_cable_tb_.empty())
-    {
-        clearCachedMuxNeighbors();
-        SWSS_LOG_NOTICE("Cleared MUX neighbor cache after warm boot completion");
-    }
-}
-
 void MuxOrch::restoreMuxNeighbors()
 {
     SWSS_LOG_NOTICE("Restoring MUX neighbors from Redis");
@@ -2135,11 +2235,6 @@ void MuxOrch::removeNeighborFromMuxTable(const IpAddress& ip, const string& alia
     
     // Also remove from in-memory cache
     cached_mux_neighbors_.erase(std::make_pair(ip, alias));
-}
-
-void MuxOrch::clearCachedMuxNeighbors()
-{
-    cached_mux_neighbors_.clear();
 }
 
 bool MuxOrch::bake()

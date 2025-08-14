@@ -89,7 +89,8 @@ public:
 
     bool enable(bool update_rt);
     bool disable(sai_object_id_t);
-    void update(NextHopKey nh, sai_object_id_t, bool = true, MuxState = MuxState::MUX_STATE_INIT);
+    void update(NextHopKey nh, sai_object_id_t, bool = true, MuxState = MuxState::MUX_STATE_INIT,
+            bool check_prefix_route = false);
 
     sai_object_id_t getNextHopId(const NextHopKey);
     MuxNeighbor getNeighbors() const { return neighbors_; };
@@ -130,6 +131,7 @@ public:
 
     bool isIpInSubnet(IpAddress ip);
     void updateNeighbor(NextHopKey nh, bool add);
+    void updateNeighborFromEvent(NextHopKey nh, bool add);
     void updateRoutes();
     sai_object_id_t getNextHopId(const NextHopKey nh)
     {
@@ -251,7 +253,6 @@ public:
     }
     void updateCachedNeighbors();
 
-    void saveMuxNeighbors();
     void restoreMuxNeighbors();
 
     bool bake() override;
@@ -267,7 +268,6 @@ private:
     void saveNeighborToMuxTable(const IpAddress& ip, const string& alias);
     void removeNeighborFromMuxTable(const IpAddress& ip, const string& alias);
     bool isCachedMuxNeighbor(const IpAddress& ip, const string& alias) const;
-    void clearCachedMuxNeighbors();
 
     void updateNeighbor(const NeighborUpdate& update);
     void updateFdb(const FdbUpdate&);
