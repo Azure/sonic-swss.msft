@@ -53,6 +53,15 @@ class TestMuxTunnelBase():
     NEIGH2_IPV6                 = "fc02:1000::201"
     NEIGH3_IPV4                 = "192.168.0.202"
     NEIGH3_IPV6                 = "fc02:1000::202"
+
+    # Test IPs for FDB-after-neighbor conversion tests (non-pre-configured)
+    TEST_NEIGH1_IPV4           = "192.168.0.110"
+    TEST_NEIGH2_IPV4           = "192.168.0.111"
+    TEST_NEIGH3_IPV4           = "192.168.0.112"
+    TEST_NEIGH4_IPV4           = "192.168.0.113"
+    TEST_NEIGH5_IPV4           = "192.168.0.114"
+    TEST_NEIGH6_IPV4           = "192.168.0.115"
+
     IPV4_MASK                   = "/32"
     IPV6_MASK                   = "/128"
     TUNNEL_NH_ID                = 0
@@ -201,7 +210,7 @@ class TestMuxTunnelBase():
         else:
             appdb.wait_for_deleted_keys(self.APP_TUNNEL_ROUTE_TABLE_NAME, destinations)
 
-    def check_neigh_in_asic_db(self, asicdb, ip, expected=True, check_no_host_route=True):
+    def check_neigh_in_asic_db(self, asicdb, ip, expected=True, no_host_route=True):
         rif_oid = self.get_vlan_rif_oid(asicdb)
         switch_oid = self.get_switch_oid(asicdb)
         neigh_key_map = {
@@ -216,7 +225,7 @@ class TestMuxTunnelBase():
 
             for key in nbr_keys:
                 if ip in key:
-                    if check_no_host_route:
+                    if no_host_route:
                         fvs = asicdb.get_entry(self.ASIC_NEIGH_TABLE, key)
                         assert fvs.get("SAI_NEIGHBOR_ENTRY_ATTR_NO_HOST_ROUTE") == "true"
                         return key
@@ -315,6 +324,85 @@ class TestMuxTunnelBase():
         ps._del("Vlan1000:"+mac)
 
         time.sleep(1)
+
+    def simulate_fdb_learn_notification(self, dvs, port, mac, vlan_name="Vlan1000"):
+        """
+        Simulate a SAI FDB learn notification event.
+
+        This function sends a direct SAI FDB_EVENT_LEARNED notification
+        to simulate hardware FDB learning, which should trigger MUX neighbor
+        conversion if the MAC matches an existing neighbor.
+        """
+        dvs.setup_db()
+        # Get required SAI OIDs
+        asicdb = dvs.get_asic_db()
+
+        # Get switch ID
+        switch_id = dvs.getSwitchOid()
+
+        # Get VLAN OID
+        vlan_oid = dvs.getVlanOid("1000")
+
+        # Get bridge port OID for the specified port
+        # Get mapping between interface name and its bridge port_id
+        iface_2_bridge_port_id = dvs.get_map_iface_bridge_port_id(dvs.adb)
+        # Get bridge port OID for the specified port
+        bridge_port_oid = iface_2_bridge_port_id[port]
+
+        # Create notification producer
+        ntf = swsscommon.NotificationProducer(dvs.adb, "NOTIFICATIONS")
+        fvp = swsscommon.FieldValuePairs()
+
+        # Format MAC address for SAI (uppercase, colon-separated)
+        sai_mac = mac.upper()
+
+        # Create FDB learn notification data
+        ntf_data = f'[{{"fdb_entry":"{{\\"bvid\\":\\"{vlan_oid}\\",\\"mac\\":\\"{sai_mac}\\",\\"switch_id\\":\\"{switch_id}\\"}}","fdb_event":"SAI_FDB_EVENT_LEARNED","list":[{{"id":"SAI_FDB_ENTRY_ATTR_BRIDGE_PORT_ID","value":"{bridge_port_oid}"}}]}}]'
+
+        # Send the FDB learn notification
+        ntf.send("fdb_event", ntf_data, fvp)
+
+        # Allow time for processing and potential neighbor conversion
+        time.sleep(2)
+
+    def simulate_fdb_aged_notification(self, dvs, port, mac, vlan_name="Vlan1000"):
+        """
+        Simulate a SAI FDB aged notification event.
+
+        This function sends a direct SAI FDB_EVENT_AGED notification
+        to simulate hardware FDB aging/removal.
+        """
+        dvs.setup_db()
+        # Get required SAI OIDs
+        asicdb = dvs.get_asic_db()
+
+        # Get switch ID
+        switch_id = dvs.getSwitchOid()
+
+        # Get VLAN OID
+        vlan_oid = dvs.getVlanOid("1000")
+
+        # Get mapping between interface name and its bridge port_id
+        iface_2_bridge_port_id = dvs.get_map_iface_bridge_port_id(dvs.adb)
+        # Get bridge port OID for the specified port
+        bridge_port_oid = iface_2_bridge_port_id[port]
+
+        # Create notification producer
+        ntf = swsscommon.NotificationProducer(dvs.adb, "NOTIFICATIONS")
+        fvp = swsscommon.FieldValuePairs()
+
+        # Format MAC address for SAI (uppercase, colon-separated)
+        sai_mac = mac.upper()
+
+        # Create FDB aged notification data
+        ntf_data = f'[{{"fdb_entry":"{{\\"bvid\\":\\"{vlan_oid}\\",\\"mac\\":\\"{sai_mac}\\",\\"switch_id\\":\\"{switch_id}\\"}}","fdb_event":"SAI_FDB_EVENT_AGED","list":[{{"id":"SAI_FDB_ENTRY_ATTR_BRIDGE_PORT_ID","value":"{bridge_port_oid}"}}]}}]'
+
+        # Send the FDB aged notification
+        ntf.send("fdb_event", ntf_data, fvp)
+
+        # Allow time for processing
+        time.sleep(2)
+
 
     def add_route(self, dvs, route, nexthops, ifaces=[]):
         apdb = dvs.get_app_db()
@@ -433,10 +521,10 @@ class TestMuxTunnelBase():
 
         # neighbors must get added even for standby port
         self.add_neighbor(dvs, self.SERV2_IPV4, "00:00:00:00:00:02")
-        srv2_v4 = self.check_neigh_in_asic_db(asicdb, self.SERV2_IPV4)
+        self.check_neigh_in_asic_db(asicdb, self.SERV2_IPV4)
 
         self.add_neighbor(dvs, self.SERV2_IPV6, "00:00:00:00:00:02")
-        srv2_v6 = self.check_neigh_in_asic_db(asicdb, self.SERV2_IPV6)
+        self.check_neigh_in_asic_db(asicdb, self.SERV2_IPV6)
 
         time.sleep(1)
 
@@ -683,7 +771,7 @@ class TestMuxTunnelBase():
                 # Reset fdb
                 self.add_neighbor(dvs, nexthop, macs[i])
 
-    def multi_nexthop_test_toggle(self, appdb, dvs, asicdb, dvs_route, route, mux_ports, nexthops, non_mux_nexthop=None):
+    def multi_nexthop_test_toggle(self, appdb, asicdb, dvs_route, route, mux_ports, nexthops, non_mux_nexthop=None):
         '''
         Tests toggling mux state for a route with multiple nexthops
         '''
@@ -752,9 +840,9 @@ class TestMuxTunnelBase():
             self.add_route(dvs, route, new_nexthops)
 
             if nh_is_mux:
-                self.multi_nexthop_test_toggle(appdb, dvs, asicdb, dvs_route, route, new_muxports, new_nexthops)
+                self.multi_nexthop_test_toggle(appdb, asicdb, dvs_route, route, new_muxports, new_nexthops)
             else:
-                self.multi_nexthop_test_toggle(appdb, dvs, asicdb, dvs_route, route, new_muxports, new_nexthops, non_mux_nexthop=new_nexthop)
+                self.multi_nexthop_test_toggle(appdb, asicdb, dvs_route, route, new_muxports, new_nexthops, non_mux_nexthop=new_nexthop)
 
             # Reset route
             self.add_route(dvs, route, nexthops)
@@ -769,13 +857,13 @@ class TestMuxTunnelBase():
         for i,nexthop in enumerate(nexthops):
             print("Triggering route update to add: %s. new route %s -> %s" % (str(nexthop), route, nexthops[:i+1]))
             self.add_route(dvs, route, nexthops[:i+1])
-            self.multi_nexthop_test_toggle(appdb, dvs, asicdb, dvs_route, route, mux_ports[:i+1], nexthops[:i+1])
+            self.multi_nexthop_test_toggle(appdb, asicdb, dvs_route, route, mux_ports[:i+1], nexthops[:i+1])
 
         # Add non_mux_nexthop to route list
         if non_mux_nexthop != None:
             print("Triggering route update to add non_mux: %s. new route %s -> %s" % (str(non_mux_nexthop), route, nexthops + [non_mux_nexthop]))
             self.add_route(dvs, route, nexthops + [non_mux_nexthop])
-            self.multi_nexthop_test_toggle(appdb, dvs, asicdb, dvs_route, route, mux_ports + [None], nexthops + [non_mux_nexthop], non_mux_nexthop=non_mux_nexthop)
+            self.multi_nexthop_test_toggle(appdb, asicdb, dvs_route, route, mux_ports + [None], nexthops + [non_mux_nexthop], non_mux_nexthop=non_mux_nexthop)
 
         self.del_route(dvs, route)
 
@@ -788,12 +876,12 @@ class TestMuxTunnelBase():
         if non_mux_nexthop != None:
             print("Triggering route update to add non_mux: %s. new route %s -> %s" % (str(non_mux_nexthop), route, [non_mux_nexthop] + nexthops))
             self.add_route(dvs, route, [non_mux_nexthop] + nexthops)
-            self.multi_nexthop_test_toggle(appdb, dvs, asicdb, dvs_route, route, [None] + mux_ports, [non_mux_nexthop] + nexthops, non_mux_nexthop=non_mux_nexthop)
+            self.multi_nexthop_test_toggle(appdb, asicdb, dvs_route, route, [None] + mux_ports, [non_mux_nexthop] + nexthops, non_mux_nexthop=non_mux_nexthop)
 
         for i,nexthop in enumerate(nexthops):
             print("Triggering route update to remove: %s. new route %s -> %s" % (str(nexthop), route, nexthops[i:]))
             self.add_route(dvs, route, nexthops[i:])
-            self.multi_nexthop_test_toggle(appdb, dvs, asicdb, dvs_route, route, mux_ports[i:], nexthops[i:])
+            self.multi_nexthop_test_toggle(appdb, asicdb, dvs_route, route, mux_ports[i:], nexthops[i:])
 
         self.del_route(dvs, route)
 
@@ -831,7 +919,7 @@ class TestMuxTunnelBase():
         for i,nexthop in enumerate(nexthops):
             print("Triggering neighbor add for %s" % (nexthop))
             self.add_neighbor(dvs, nexthop, macs[i])
-            self.multi_nexthop_test_toggle(appdb, dvs, asicdb, dvs_route, route, mux_ports, nexthops)
+            self.multi_nexthop_test_toggle(appdb, asicdb, dvs_route, route, mux_ports, nexthops)
 
     def multi_nexthop_test_neighbor_del(self, appdb, asicdb, dvs, dvs_route, route, mux_ports, nexthops):
         '''
@@ -841,7 +929,7 @@ class TestMuxTunnelBase():
         for nexthop in nexthops:
             print("Triggering neighbor del for %s" % (nexthop))
             self.add_neighbor(dvs, nexthop, "00:00:00:00:00:00")
-            self.multi_nexthop_test_toggle(appdb, dvs, asicdb, dvs_route, route, mux_ports, nexthops)
+            self.multi_nexthop_test_toggle(appdb, asicdb, dvs_route, route, mux_ports, nexthops)
 
     def create_and_test_multi_nexthop_routes(self, dvs, dvs_route, appdb, macs, new_mac, asicdb):
         '''
@@ -901,8 +989,8 @@ class TestMuxTunnelBase():
             # Testing mux neighbors that do not match mux configured ip
             self.add_route(dvs, route_ipv4, [self.SERV1_IPV4, mux_neighbor_ipv4])
             self.add_route(dvs, route_ipv6, [self.SERV1_IPV6, mux_neighbor_ipv6])
-            self.multi_nexthop_test_toggle(appdb, dvs, asicdb, dvs_route, route_ipv4, mux_ports, [self.SERV1_IPV4, mux_neighbor_ipv4])
-            self.multi_nexthop_test_toggle(appdb, dvs, asicdb, dvs_route, route_ipv6, mux_ports, [self.SERV1_IPV6, mux_neighbor_ipv6])
+            self.multi_nexthop_test_toggle(appdb, asicdb, dvs_route, route_ipv4, mux_ports, [self.SERV1_IPV4, mux_neighbor_ipv4])
+            self.multi_nexthop_test_toggle(appdb, asicdb, dvs_route, route_ipv6, mux_ports, [self.SERV1_IPV6, mux_neighbor_ipv6])
             self.del_route(dvs,route_ipv4)
             self.del_route(dvs,route_ipv6)
 
@@ -1346,7 +1434,8 @@ class TestMuxTunnelBase():
 
     def check_neighbor_state(
             self, dvs, dvs_route, neigh_ip, expect_route=True,
-            expect_neigh=False, expected_mac='00:00:00:00:00:00'
+            expect_neigh=False, expected_mac='00:00:00:00:00:00',
+            no_host_route=True
         ):
         """
         Checks the status of neighbor entries in APPL and ASIC DB
@@ -1372,7 +1461,7 @@ class TestMuxTunnelBase():
                 self.check_nexthop_in_asic_db(asic_db, route, standby=standby_state)
         else:
             dvs_route.check_asicdb_deleted_route_entries([prefix])
-            self.check_neigh_in_asic_db(asic_db, neigh_ip, expected=expect_neigh)
+            self.check_neigh_in_asic_db(asic_db, neigh_ip, expected=expect_neigh, no_host_route=no_host_route)
 
     def execute_action(self, action, dvs, test_info):
         if action in (PING_SERV, PING_NEIGH):
@@ -1631,7 +1720,7 @@ class TestMuxTunnel(TestMuxTunnelBase):
 
     def test_neighbor_miss(
             self, dvs, dvs_route, ips_for_test, neigh_miss_test_sequence,
-            ip_to_intf_map, intf_fdb_map, neighbor_cleanup, setup_vlan,
+            ip_to_intf_map, intf_fdb_map, neighbor_cleanup, setup, setup_vlan,
             setup_mux_cable, setup_tunnel, setup_peer_switch, testlog
     ):
         ip = ips_for_test[0]
@@ -1706,6 +1795,382 @@ class TestMuxTunnel(TestMuxTunnelBase):
         asicdb = dvs.get_asic_db()
 
         self.create_and_test_soc(appdb, asicdb, dvs, dvs_route)
+
+    def test_standalone_tunnel_route_non_mux_neighbor_zero_mac(
+            self, dvs, dvs_route, setup_vlan, setup_mux_cable, setup_tunnel,
+            setup_peer_switch, neighbor_cleanup, testlog
+    ):
+        appdb = swsscommon.DBConnector(swsscommon.APPL_DB, dvs.redis_sock, 0)
+        config_db = dvs.get_config_db()
+        asicdb = dvs.get_asic_db()
+
+        # Add Ethernet12 to VLAN1000 but without MUX cable configuration
+        fvs = {"tagging_mode": "untagged"}
+        config_db.create_entry("VLAN_MEMBER", "Vlan1000|Ethernet12", fvs)
+        dvs.port_admin_set("Ethernet12", "up")
+
+        # Step 1: First test that zero MAC neighbors DO create standalone tunnel routes
+        non_mux_neighbor_ip = "192.168.0.150"
+        self.add_neighbor(dvs, non_mux_neighbor_ip, "00:00:00:00:00:00")
+
+        # Verify standalone tunnel route is created for zero MAC neighbor on non-MUX port
+        time.sleep(2)
+        non_mux_prefix = non_mux_neighbor_ip + self.IPV4_MASK
+        self.check_neighbor_state(dvs, dvs_route, non_mux_neighbor_ip,
+                                expect_route=True, expect_neigh=False,
+                                expected_mac='00:00:00:00:00:00')
+
+        # Step 2: Set up a MUX port (Ethernet0) in standby and create MUX neighbor
+        self.set_mux_state(appdb, "Ethernet0", "standby")
+        self.wait_for_mux_state(dvs, "Ethernet0", "standby")
+
+        # Add FDB entry for Ethernet0 (MUX port)
+        self.add_fdb(dvs, "Ethernet0", "00-00-00-00-00-01")
+
+        # Add a neighbor on the MUX port to trigger tunnel route creation
+        mux_neighbor_ip = self.SERV1_IPV4
+        self.add_neighbor(dvs, mux_neighbor_ip, "00:00:00:00:00:01")
+
+        # Verify that standalone tunnel route is created for MUX neighbor
+        time.sleep(2)
+        mux_prefix = mux_neighbor_ip + self.IPV4_MASK
+        dvs_route.check_asicdb_route_entries([mux_prefix])
+        rtkeys_mux = dvs_route.check_asicdb_route_entries([mux_prefix])
+        self.check_nexthop_in_asic_db(asicdb, rtkeys_mux[0], True)  # Should point to tunnel
+
+        # At this point we should have tunnel routes for both neighbors
+        dvs_route.check_asicdb_route_entries([non_mux_prefix, mux_prefix])
+
+        # Step 3: Test the scenario - update the zero MAC neighbor on non-MUX port
+        # with a non-zero MAC. This triggers removeStandaloneTunnelRoute, which should
+        # only remove the non-MUX neighbor's standalone tunnel route and NOT affect the MUX neighbor route
+        self.add_neighbor(dvs, non_mux_neighbor_ip, "00:aa:bb:cc:dd:ee")
+        time.sleep(1)
+
+        # Step 4: Verify that:
+        # a) The non-MUX neighbor now has a regular neighbor entry (no longer standalone tunnel route)
+        self.check_neighbor_state(dvs, dvs_route, non_mux_neighbor_ip,
+                                expect_route=False, expect_neigh=True,
+                                expected_mac='00:aa:bb:cc:dd:ee',
+                                no_host_route=False)
+
+        # b) The MUX neighbor's tunnel route is still intact
+        # This is the key test - the fix ensures removeStandaloneTunnelRoute
+        # checks if neighbor belongs to MUX port before removing routes
+        dvs_route.check_asicdb_route_entries([mux_prefix])
+        rtkeys_final = dvs_route.check_asicdb_route_entries([mux_prefix])
+        self.check_nexthop_in_asic_db(asicdb, rtkeys_final[0], True)  # Should still point to tunnel
+
+        # Cleanup
+        self.del_neighbor(dvs, non_mux_neighbor_ip)
+        self.del_neighbor(dvs, mux_neighbor_ip)
+        self.del_fdb(dvs, "00-00-00-00-00-01")
+        config_db.delete_entry("VLAN_MEMBER", "Vlan1000|Ethernet12")
+
+    def test_fdb_after_neighbor_conversion_active_mux(
+        self, dvs, dvs_route, setup, setup_vlan, setup_mux_cable, setup_tunnel,
+        setup_peer_switch, neighbor_cleanup, testlog
+    ):
+        """Test neighbor conversion to MUX neighbor when FDB event comes after neighbor is added (active MUX).
+
+        This test verifies the convertToMuxNeighbor() API by:
+        1. Adding a regular neighbor first (not pre-configured as MUX neighbor)
+        2. Later triggering FDB learn event on MUX port
+        3. Verifying neighbor gets converted to MUX neighbor with prefix route
+        """
+        # Setup test environment
+        appdb = swsscommon.DBConnector(swsscommon.APPL_DB, dvs.redis_sock, 0)
+        asicdb = dvs.get_asic_db()
+        state_db = dvs.get_state_db()
+        config_db = dvs.get_config_db()
+
+        dvs.runcmd("swssloglevel -l INFO -c orchagent")
+
+        # Add MUX cable and set it to active state
+        cable_name = "Ethernet0"
+        self.set_mux_state(appdb, cable_name, "active")
+        time.sleep(1)
+
+        neighbor_ip = self.TEST_NEIGH1_IPV4  # Use non-pre-configured IP for FDB conversion test
+        neighbor_mac = "00:11:22:33:44:55"
+
+        # Step 1: Add neighbor first (before FDB learn event)
+        # This neighbor will be created as a regular neighbor initially
+        self.add_neighbor(dvs, neighbor_ip, neighbor_mac)
+        time.sleep(1)
+
+        # Verify initial state: neighbor exists but is NOT a MUX neighbor yet
+        # (should have normal host route, not prefix route)
+        self.check_neighbor_state(dvs, dvs_route, neighbor_ip,
+                                expect_route=False, expect_neigh=True,
+                                expected_mac=neighbor_mac,
+                                no_host_route=False)
+
+        # Step 2: Simulate FDB learn event (neighbor MAC learned on MUX port)
+        # This should trigger conversion of the existing neighbor to MUX neighbor
+        self.simulate_fdb_learn_notification(dvs, cable_name, neighbor_mac, vlan_name="Vlan1000")
+        time.sleep(2)  # Allow time for FDB processing and neighbor conversion
+
+        # Step 3: Verify neighbor has been converted to MUX neighbor
+        # Should now have NO_HOST_ROUTE flag and prefix route created
+        self.check_neighbor_state(dvs, dvs_route, neighbor_ip,
+                                expect_route=True, expect_neigh=True,
+                                expected_mac=neighbor_mac,
+                                no_host_route=True)
+
+        # Verify MUX prefix route exists and points to neighbor nexthop (active state)
+        mux_prefix = neighbor_ip + "/32"
+        rtkeys = dvs_route.check_asicdb_route_entries([mux_prefix])
+        self.check_nexthop_in_asic_db(asicdb, rtkeys[0], False)  # Should point to neighbor NH, not tunnel
+
+        # Step 4: Test MUX state change after conversion
+        # Switch to standby - route should now point to tunnel
+        self.set_mux_state(appdb, cable_name, "standby")
+        time.sleep(1)
+
+        # Verify route now points to tunnel nexthop
+        rtkeys_standby = dvs_route.check_asicdb_route_entries([mux_prefix])
+        self.check_nexthop_in_asic_db(asicdb, rtkeys_standby[0], True)  # Should point to tunnel
+
+        # Cleanup
+        self.del_neighbor(dvs, neighbor_ip)
+        #self.del_fdb(dvs, neighbor_mac.replace(":", "-"))
+        self.simulate_fdb_aged_notification(dvs, cable_name, neighbor_mac, vlan_name="Vlan1000")
+        time.sleep(2)  # Allow time for FDB processing
+
+    def test_fdb_after_neighbor_conversion_standby_mux(
+        self, dvs, dvs_route, setup, setup_vlan, setup_mux_cable, setup_tunnel,
+        setup_peer_switch, neighbor_cleanup, testlog
+    ):
+        """Test neighbor conversion to MUX neighbor when FDB event comes after neighbor is added (standby MUX).
+
+        This test verifies the convertToMuxNeighbor() API by:
+        1. Adding a regular neighbor first (not pre-configured as MUX neighbor)
+        2. Setting MUX port to standby state
+        3. Later triggering FDB learn event on MUX port
+        4. Verifying neighbor gets converted to MUX neighbor without prefix route (standby)
+        """
+        # Setup test environment
+        appdb = swsscommon.DBConnector(swsscommon.APPL_DB, dvs.redis_sock, 0)
+        asicdb = dvs.get_asic_db()
+        config_db = dvs.get_config_db()
+
+        # Add MUX cable and set it to standby state
+        cable_name = "Ethernet0"
+        self.set_mux_state(appdb, cable_name, "standby")
+        time.sleep(1)
+
+        neighbor_ip = self.TEST_NEIGH2_IPV4  # Use non-pre-configured IP for FDB conversion test
+        neighbor_mac = "00:55:44:33:22:11"
+
+        # Step 1: Add neighbor first (before FDB learn event)
+        self.add_neighbor(dvs, neighbor_ip, neighbor_mac)
+        time.sleep(1)
+
+        # Verify initial state: regular neighbor (not MUX neighbor)
+        self.check_neighbor_state(dvs, dvs_route, neighbor_ip,
+                                expect_route=False, expect_neigh=True,
+                                expected_mac=neighbor_mac,
+                                no_host_route=False)
+
+        # Step 2: Simulate FDB learn event - should trigger conversion
+        self.simulate_fdb_learn_notification(dvs, cable_name, neighbor_mac, vlan_name="Vlan1000")
+        time.sleep(2)
+
+        # Step 3: Verify conversion to MUX neighbor in standby state
+        # Should have NO_HOST_ROUTE flag and prefix route pointing to tunnel
+        self.check_neighbor_state(dvs, dvs_route, neighbor_ip,
+                                expect_route=True, expect_neigh=False,
+                                expected_mac=neighbor_mac,
+                                no_host_route=True)
+
+        mux_prefix = neighbor_ip + "/32"
+        rtkeys = dvs_route.check_asicdb_route_entries([mux_prefix])
+        self.check_nexthop_in_asic_db(asicdb, rtkeys[0], True)  # Should point to tunnel (standby)
+
+        # Step 4: Test state change to active
+        self.set_mux_state(appdb, cable_name, "active")
+        time.sleep(1)
+
+        # Verify route now points to neighbor nexthop
+        rtkeys_active = dvs_route.check_asicdb_route_entries([mux_prefix])
+        self.check_nexthop_in_asic_db(asicdb, rtkeys_active[0], False)  # Should point to neighbor NH
+
+        # Cleanup
+        self.del_neighbor(dvs, neighbor_ip)
+        self.simulate_fdb_aged_notification(dvs, cable_name, neighbor_mac, vlan_name="Vlan1000")
+        time.sleep(2)  # Allow time for FDB processing
+
+    def test_fdb_after_neighbor_multiple_conversions(
+        self, dvs, dvs_route, setup, setup_vlan, setup_mux_cable, setup_tunnel,
+        setup_peer_switch, neighbor_cleanup, testlog
+    ):
+        """Test multiple neighbors getting converted when FDB events come after neighbor additions."""
+        # Setup test environment
+        appdb = swsscommon.DBConnector(swsscommon.APPL_DB, dvs.redis_sock, 0)
+        asicdb = dvs.get_asic_db()
+        config_db = dvs.get_config_db()
+
+        # Add MUX cable and set to active
+        cable_name = "Ethernet0"
+        self.set_mux_state(appdb, cable_name, "active")
+        time.sleep(1)
+
+        # Multiple neighbors - use non-pre-configured IPs for FDB conversion test
+        neighbors = [
+            (self.TEST_NEIGH3_IPV4, "00:11:11:11:11:11"),
+            (self.TEST_NEIGH4_IPV4, "00:22:22:22:22:22"),
+            (self.TEST_NEIGH5_IPV4, "00:33:33:33:33:33"),
+        ]
+
+        # Step 1: Add all neighbors first (before any FDB events)
+        for ip, mac in neighbors:
+            self.add_neighbor(dvs, ip, mac)
+        time.sleep(1)
+
+        # Verify all are regular neighbors initially
+        for ip, mac in neighbors:
+            self.check_neighbor_state(dvs, dvs_route, ip,
+                                    expect_route=False, expect_neigh=True,
+                                    expected_mac=mac,
+                                    no_host_route=False)
+
+        # Step 2: Add FDB entries one by one and verify each conversion
+        converted_neighbors = []
+        for ip, mac in neighbors:
+            # Add FDB entry to trigger conversion
+            self.add_fdb(dvs, cable_name, mac)
+            time.sleep(1)
+            converted_neighbors.append((ip, mac))
+
+            # Verify MUX prefix routes exist for all converted neighbors
+            mux_prefixes = [neighbor_ip + "/32" for neighbor_ip, _ in converted_neighbors]
+            dvs_route.check_asicdb_route_entries(mux_prefixes)
+
+        # Verify number of NHs = Neighbor NHs + 1 tunnel NH
+        expected_nhs = (len(converted_neighbors) + 1)
+        self.check_tnl_nexthop_in_asic_db(asicdb, expected_nhs)
+
+        # Step 3: Test bulk state change affects all converted neighbors
+        self.set_mux_state(appdb, cable_name, "standby")
+        time.sleep(1)
+
+        # All should now point to tunnel
+        for ip, mac in converted_neighbors:
+            mux_prefix = ip + "/32"
+            rtkeys = dvs_route.check_asicdb_route_entries([mux_prefix])
+            self.check_nexthop_in_asic_db(asicdb, rtkeys[0], True)  # Should point to tunnel
+
+        # Cleanup
+        for ip, mac in neighbors:
+            self.del_neighbor(dvs, ip)
+            self.del_fdb(dvs, mac.replace(":", "-"))
+
+    def test_fdb_after_neighbor_no_conversion_non_mux_port(
+        self, dvs, dvs_route, setup, setup_vlan, setup_mux_cable, setup_tunnel,
+        setup_peer_switch, neighbor_cleanup, testlog
+    ):
+        """Test that neighbors remain regular when FDB events come from non-MUX ports."""
+        # Setup test environment
+        config_db = dvs.get_config_db()
+
+        # Setup a non-MUX VLAN member port
+        config_db.create_entry("VLAN_MEMBER", "Vlan1000|Ethernet12", {"tagging_mode": "untagged"})
+        time.sleep(1)
+
+        neighbor_ip = "192.168.0.150"
+        neighbor_mac = "00:aa:bb:cc:dd:ff"
+
+        # Step 1: Add neighbor on VLAN
+        self.add_neighbor(dvs, neighbor_ip, neighbor_mac)
+        time.sleep(1)
+
+        # Verify initial state: regular neighbor
+        self.check_neighbor_state(dvs, dvs_route, neighbor_ip,
+                                expect_route=False, expect_neigh=True,
+                                expected_mac=neighbor_mac,
+                                no_host_route=False)
+
+        # Step 2: Add FDB entry for non-MUX port (Ethernet12)
+        # This should NOT trigger conversion to MUX neighbor
+        self.add_fdb(dvs, "Ethernet12", neighbor_mac)
+        time.sleep(1)
+
+        # Step 3: Verify neighbor remains regular (no conversion)
+        self.check_neighbor_state(dvs, dvs_route, neighbor_ip,
+                                expect_route=False, expect_neigh=True,
+                                expected_mac=neighbor_mac,
+                                no_host_route=False)
+
+        # No MUX prefix route should be created
+        mux_prefix = neighbor_ip + "/32"
+        self.check_neighbor_state(dvs, dvs_route, neighbor_ip,
+                                expect_route=False, expect_neigh=True,
+                                expected_mac=neighbor_mac,
+                                no_host_route=False)
+
+        # Cleanup
+        self.del_neighbor(dvs, neighbor_ip)
+        self.del_fdb(dvs, neighbor_mac.replace(":", "-"))
+        config_db.delete_entry("VLAN_MEMBER", "Vlan1000|Ethernet12")
+
+    def test_fdb_after_neighbor_early_mux_state_changes(
+        self, dvs, dvs_route, setup, setup_vlan, setup_mux_cable, setup_tunnel,
+        setup_peer_switch, neighbor_cleanup, testlog
+    ):
+        """Test MUX state changes that happen before FDB-triggered neighbor conversion."""
+        # Setup test environment
+        asicdb = dvs.get_asic_db()
+        appdb = swsscommon.DBConnector(swsscommon.APPL_DB, dvs.redis_sock, 0)
+
+        # Add MUX cable and set to active
+        cable_name = "Ethernet0"
+        self.set_mux_state(appdb, cable_name, "active")
+        time.sleep(1)
+
+        neighbor_ip = self.TEST_NEIGH6_IPV4  # Use non-pre-configured IP for FDB conversion test
+        neighbor_mac = "00:99:88:77:66:55"
+
+        # Step 1: Add neighbor (regular neighbor initially)
+        self.add_neighbor(dvs, neighbor_ip, neighbor_mac)
+        time.sleep(1)
+
+        # Step 2: Change MUX state before FDB event
+        # This should not affect the regular neighbor yet
+        self.set_mux_state(appdb, cable_name, "standby")
+        time.sleep(1)
+
+        # Verify still a regular neighbor (no conversion yet)
+        self.check_neighbor_state(dvs, dvs_route, neighbor_ip,
+                                expect_route=False, expect_neigh=True,
+                                expected_mac=neighbor_mac,
+                                no_host_route=False)
+
+        # Step 3: Now trigger FDB event - should convert and respect current MUX state (standby)
+        self.add_fdb(dvs, cable_name, neighbor_mac)
+        time.sleep(2)
+
+        # Step 4: Verify conversion happened and route points to tunnel (standby state)
+        self.check_neighbor_state(dvs, dvs_route, neighbor_ip,
+                                expect_route=True, expect_neigh=False,
+                                expected_mac=neighbor_mac,
+                                no_host_route=True)
+
+        mux_prefix = neighbor_ip + "/32"
+        rtkeys = dvs_route.check_asicdb_route_entries([mux_prefix])
+        self.check_nexthop_in_asic_db(asicdb, rtkeys[0], True)  # Should point to tunnel (standby)
+
+        # Step 5: Verify subsequent MUX state changes work correctly
+        self.set_mux_state(appdb, cable_name, "active")
+        time.sleep(1)
+
+        rtkeys_active = dvs_route.check_asicdb_route_entries([mux_prefix])
+        self.check_nexthop_in_asic_db(asicdb, rtkeys_active[0], False)  # Should point to neighbor NH
+
+        # Cleanup
+        self.del_neighbor(dvs, neighbor_ip)
+        self.del_fdb(dvs, neighbor_mac.replace(":", "-"))
+
 
     def test_warm_boot_neighbor_restore(
         self, dvs, dvs_route, setup, setup_vlan, setup_mux_cable, setup_tunnel,
