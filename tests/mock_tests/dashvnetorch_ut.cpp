@@ -91,12 +91,9 @@ namespace dashvnetorch_test
 
     TEST_F(DashVnetOrchTest, AddRemoveVnet)
     {
-        expected_ca_to_pa = orig_ca_to_pa + 1;
-        expected_pa_validation = orig_pa_validation + 1;
-
+        std::vector<sai_status_t> exp_status = {SAI_STATUS_SUCCESS};
         AddVnetEncapRoutingType(dash::route_type::ENCAP_TYPE_VXLAN);
         AddPLRoutingType();
-
         {
             InSequence seq;
             EXPECT_CALL(*mock_sai_dash_vnet_api, create_vnets).Times(1);
@@ -113,12 +110,18 @@ namespace dashvnetorch_test
         AddPortMap();
         AddVnetMapPL();
 
+        expected_ca_to_pa = orig_ca_to_pa + 2;
+        expected_pa_validation = orig_pa_validation + 1;
+
         EXPECT_TRUE(CheckExpectedCrmMatch(expected_ca_to_pa, expected_pa_validation));
 
         RemoveVnetMap();
         RemoveVnetMapPL();
 
+        // Removing all VNET maps using a specific PA validation entry should also result in the removal
+        // of the PA validation entry, even if the VNET still exists
         EXPECT_TRUE(CheckExpectedCrmMatch(orig_ca_to_pa, orig_pa_validation));
+
         RemoveVnet();
 
         EXPECT_TRUE(CheckExpectedCrmMatch(orig_ca_to_pa, orig_pa_validation));
