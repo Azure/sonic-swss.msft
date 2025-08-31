@@ -1629,7 +1629,9 @@ void MuxOrch::updateFdb(const FdbUpdate& update)
                 const auto& neighbor_data = neighbor_pair.second;
 
                 // Skip if this neighbor is already a MUX neighbor
-                if (neighbor_data.prefix_route)
+                // soc neighbors will get added with prefix_route but
+                // they may not be yet qualified as mux neighbor
+                if (neighbor_data.prefix_route && !isSkipNeighbor(neighbor_entry.ip_address))
                 {
                     continue;
                 }

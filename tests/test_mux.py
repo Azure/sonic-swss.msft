@@ -1867,6 +1867,136 @@ class TestMuxTunnel(TestMuxTunnelBase):
         self.del_fdb(dvs, "00-00-00-00-00-01")
         config_db.delete_entry("VLAN_MEMBER", "Vlan1000|Ethernet12")
 
+    def test_fdb_after_soc_neighbor_conversion_active_mux(
+        self, dvs, dvs_route, setup, setup_vlan, setup_mux_cable, setup_tunnel,
+        setup_peer_switch, neighbor_cleanup, testlog
+    ):
+        """Test SoC neighbor conversion to MUX neighbor when FDB event comes after neighbor is added (active MUX).
+
+        This test verifies the convertToMuxNeighbor() API by:
+        1. Adding a SoC neighbor first (not pre-configured as MUX neighbor)
+        2. Later triggering FDB learn event on MUX port
+        3. Verifying neighbor gets converted to MUX neighbor with prefix route
+        """
+        # Setup test environment
+        appdb = swsscommon.DBConnector(swsscommon.APPL_DB, dvs.redis_sock, 0)
+        asicdb = dvs.get_asic_db()
+        state_db = dvs.get_state_db()
+        config_db = dvs.get_config_db()
+
+        dvs.runcmd("swssloglevel -l INFO -c orchagent")
+
+        # Add MUX cable and set it to active state
+        cable_name = "Ethernet0"
+        self.set_mux_state(appdb, cable_name, "active")
+        time.sleep(1)
+
+        neighbor_ip = self.SERV1_SOC_IPV4  # Use non-pre-configured IP for FDB conversion test
+        neighbor_mac = "00:11:22:33:44:55"
+
+        # Step 1: Add the SoC neighbor first (before FDB learn event)
+        # This neighbor will be created as no_host_route neighbor initially
+        self.add_neighbor(dvs, neighbor_ip, neighbor_mac)
+        time.sleep(1)
+
+        # Verify initial state: SoC neighbor should always be mux neighbor
+        # (should have prefix route)
+        self.check_neighbor_state(dvs, dvs_route, neighbor_ip,
+                                expect_route=True, expect_neigh=True,
+                                expected_mac=neighbor_mac,
+                                no_host_route=True)
+
+        # Step 2: Simulate FDB learn event (SoC neighbor MAC learned on MUX port)
+        # This should trigger conversion of the existing neighbor to MUX neighbor
+        self.simulate_fdb_learn_notification(dvs, cable_name, neighbor_mac, vlan_name="Vlan1000")
+        time.sleep(2)  # Allow time for FDB processing and neighbor conversion
+
+        # Step 3: Verify neighbor has been converted to MUX neighbor
+        self.check_neighbor_state(dvs, dvs_route, neighbor_ip,
+                                expect_route=True, expect_neigh=True,
+                                expected_mac=neighbor_mac,
+                                no_host_route=True)
+
+        # Verify MUX prefix route continues to exists and points to neighbor nexthop (active state)
+        mux_prefix = neighbor_ip + "/32"
+        rtkeys = dvs_route.check_asicdb_route_entries([mux_prefix])
+        self.check_nexthop_in_asic_db(asicdb, rtkeys[0], False)  # Should point to neighbor NH, not tunnel
+
+        # Step 4: Test MUX state change after conversion
+        # Switch to standby - route should now point to tunnel
+        self.set_mux_state(appdb, cable_name, "standby")
+        time.sleep(1)
+
+        # Verify route now points to tunnel nexthop
+        rtkeys_standby = dvs_route.check_asicdb_route_entries([mux_prefix])
+        self.check_nexthop_in_asic_db(asicdb, rtkeys_standby[0], True)  # Should point to tunnel
+
+        # Cleanup
+        self.del_neighbor(dvs, neighbor_ip)
+        #self.del_fdb(dvs, neighbor_mac.replace(":", "-"))
+        self.simulate_fdb_aged_notification(dvs, cable_name, neighbor_mac, vlan_name="Vlan1000")
+        time.sleep(2)  # Allow time for FDB processing
+
+    def test_fdb_soc_neighbor_active_mux(
+        self, dvs, dvs_route, setup, setup_vlan, setup_mux_cable, setup_tunnel,
+        setup_peer_switch, neighbor_cleanup, testlog
+    ):
+        """Test SoC neighbor when FDB event comes before neighbor is added (active MUX)
+           SoC FDB learn event followed by neighbor addition.
+        """
+        # Setup test environment
+        appdb = swsscommon.DBConnector(swsscommon.APPL_DB, dvs.redis_sock, 0)
+        asicdb = dvs.get_asic_db()
+        state_db = dvs.get_state_db()
+        config_db = dvs.get_config_db()
+
+        dvs.runcmd("swssloglevel -l INFO -c orchagent")
+
+        # Add MUX cable and set it to active state
+        cable_name = "Ethernet0"
+        self.set_mux_state(appdb, cable_name, "active")
+        time.sleep(1)
+
+        neighbor_ip = self.SERV1_SOC_IPV4  # Use non-pre-configured IP for FDB conversion test
+        neighbor_mac = "00:11:22:33:44:55"
+
+        # Step 1: Simulate FDB learn event (SoC neighbor MAC learned on MUX port)
+        # This should trigger conversion of the existing neighbor to MUX neighbor
+        self.simulate_fdb_learn_notification(dvs, cable_name, neighbor_mac, vlan_name="Vlan1000")
+        time.sleep(2)  # Allow time for FDB processing and neighbor conversion
+
+        # Step 2: Add neighbor first (after FDB learn event)
+        # This neighbor will be created as a regular neighbor initially
+        self.add_neighbor(dvs, neighbor_ip, neighbor_mac)
+        time.sleep(1)
+
+        # Verify initial state: SoC neighbor should always be mux neighbor
+        # (should have prefix route)
+        self.check_neighbor_state(dvs, dvs_route, neighbor_ip,
+                                expect_route=True, expect_neigh=True,
+                                expected_mac=neighbor_mac,
+                                no_host_route=True)
+
+        # Verify MUX prefix route exists and contines to points to neighbor nexthop (active state)
+        mux_prefix = neighbor_ip + "/32"
+        rtkeys = dvs_route.check_asicdb_route_entries([mux_prefix])
+        self.check_nexthop_in_asic_db(asicdb, rtkeys[0], False)  # Should point to neighbor NH, not tunnel
+
+        # Step 4: Test MUX state change after conversion
+        # Switch to standby - route should now point to tunnel
+        self.set_mux_state(appdb, cable_name, "standby")
+        time.sleep(1)
+
+        # Verify route now points to tunnel nexthop
+        rtkeys_standby = dvs_route.check_asicdb_route_entries([mux_prefix])
+        self.check_nexthop_in_asic_db(asicdb, rtkeys_standby[0], True)  # Should point to tunnel
+
+        # Cleanup
+        self.del_neighbor(dvs, neighbor_ip)
+        #self.del_fdb(dvs, neighbor_mac.replace(":", "-"))
+        self.simulate_fdb_aged_notification(dvs, cable_name, neighbor_mac, vlan_name="Vlan1000")
+        time.sleep(2)  # Allow time for FDB processing
+
     def test_fdb_after_neighbor_conversion_active_mux(
         self, dvs, dvs_route, setup, setup_vlan, setup_mux_cable, setup_tunnel,
         setup_peer_switch, neighbor_cleanup, testlog
