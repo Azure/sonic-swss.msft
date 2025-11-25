@@ -3875,7 +3875,7 @@ bool PortsOrch::initPort(const PortConfig &port)
                     }
                     else
                     {
-                        if (p.m_host_tx_queue_configured && p.m_host_tx_queue <= maxQueueNumber)
+                        if (p.m_host_tx_queue_configured && p.m_host_tx_queue < maxQueueNumber)
                         {
                             flexCounterQueueState.enableQueueCounter(p.m_host_tx_queue);
                         }
