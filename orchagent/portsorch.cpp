@@ -98,7 +98,7 @@ struct PortAttrValue
 };
 
 typedef PortAttrValue PortAttrValue_t;
-typedef std::map<sai_port_serdes_attr_t, std::vector<std::uint32_t>> PortSerdesAttrMap_t;
+typedef std::map<sai_port_serdes_attr_t, SerdesValue> PortSerdesAttrMap_t;
 
 struct PortBulker
 {
@@ -474,97 +474,102 @@ static void getPortSerdesAttr(PortSerdesAttrMap_t &map, const decltype(PortConfi
 {
     if (serdes.preemphasis.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_PREEMPHASIS] = serdes.preemphasis.value;
+        map[SAI_PORT_SERDES_ATTR_PREEMPHASIS] = SerdesValue(serdes.preemphasis.value);
     }
 
     if (serdes.idriver.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_IDRIVER] = serdes.idriver.value;
+        map[SAI_PORT_SERDES_ATTR_IDRIVER] = SerdesValue(serdes.idriver.value);
     }
 
     if (serdes.ipredriver.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_IPREDRIVER] = serdes.ipredriver.value;
+        map[SAI_PORT_SERDES_ATTR_IPREDRIVER] = SerdesValue(serdes.ipredriver.value);
     }
 
     if (serdes.pre1.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_TX_FIR_PRE1] = serdes.pre1.value;
+        map[SAI_PORT_SERDES_ATTR_TX_FIR_PRE1] = SerdesValue(serdes.pre1.value);
     }
 
     if (serdes.pre2.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_TX_FIR_PRE2] = serdes.pre2.value;
+        map[SAI_PORT_SERDES_ATTR_TX_FIR_PRE2] = SerdesValue(serdes.pre2.value);
     }
 
     if (serdes.pre3.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_TX_FIR_PRE3] = serdes.pre3.value;
+        map[SAI_PORT_SERDES_ATTR_TX_FIR_PRE3] = SerdesValue(serdes.pre3.value);
     }
 
     if (serdes.main.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_TX_FIR_MAIN] = serdes.main.value;
+        map[SAI_PORT_SERDES_ATTR_TX_FIR_MAIN] = SerdesValue(serdes.main.value);
     }
 
     if (serdes.post1.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_TX_FIR_POST1] = serdes.post1.value;
+        map[SAI_PORT_SERDES_ATTR_TX_FIR_POST1] = SerdesValue(serdes.post1.value);
     }
 
     if (serdes.post2.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_TX_FIR_POST2] = serdes.post2.value;
+        map[SAI_PORT_SERDES_ATTR_TX_FIR_POST2] = SerdesValue(serdes.post2.value);
     }
 
     if (serdes.post3.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_TX_FIR_POST3] = serdes.post3.value;
+        map[SAI_PORT_SERDES_ATTR_TX_FIR_POST3] = SerdesValue(serdes.post3.value);
     }
 
     if (serdes.attn.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_TX_FIR_ATTN] = serdes.attn.value;
+        map[SAI_PORT_SERDES_ATTR_TX_FIR_ATTN] = SerdesValue(serdes.attn.value);
     }
 
     if (serdes.ob_m2lp.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_TX_PAM4_RATIO] = serdes.ob_m2lp.value;
+        map[SAI_PORT_SERDES_ATTR_TX_PAM4_RATIO] = SerdesValue(serdes.ob_m2lp.value);
     }
 
     if (serdes.ob_alev_out.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_TX_OUT_COMMON_MODE] = serdes.ob_alev_out.value;
+        map[SAI_PORT_SERDES_ATTR_TX_OUT_COMMON_MODE] = SerdesValue(serdes.ob_alev_out.value);
     }
 
     if (serdes.obplev.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_TX_PMOS_COMMON_MODE] = serdes.obplev.value;
+        map[SAI_PORT_SERDES_ATTR_TX_PMOS_COMMON_MODE] = SerdesValue(serdes.obplev.value);
     }
 
     if (serdes.obnlev.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_TX_NMOS_COMMON_MODE] = serdes.obnlev.value;
+        map[SAI_PORT_SERDES_ATTR_TX_NMOS_COMMON_MODE] = SerdesValue(serdes.obnlev.value);
     }
 
     if (serdes.regn_bfm1p.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_TX_PMOS_VLTG_REG] = serdes.regn_bfm1p.value;
+        map[SAI_PORT_SERDES_ATTR_TX_PMOS_VLTG_REG] = SerdesValue(serdes.regn_bfm1p.value);
     }
 
     if (serdes.regn_bfm1n.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_TX_NMOS_VLTG_REG] = serdes.regn_bfm1n.value;
+        map[SAI_PORT_SERDES_ATTR_TX_NMOS_VLTG_REG] = SerdesValue(serdes.regn_bfm1n.value);
     }
 
     if (serdes.txpolarity.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_TX_POLARITY] = serdes.txpolarity.value;
+        map[SAI_PORT_SERDES_ATTR_TX_POLARITY] = SerdesValue(serdes.txpolarity.value);
     }
 
     if (serdes.rxpolarity.is_set)
     {
-        map[SAI_PORT_SERDES_ATTR_RX_POLARITY] = serdes.rxpolarity.value;
+        map[SAI_PORT_SERDES_ATTR_RX_POLARITY] = SerdesValue(serdes.rxpolarity.value);
+    }
+
+    if (serdes.custom_collection.is_set)
+    {
+        map[SAI_PORT_SERDES_ATTR_CUSTOM_COLLECTION] = SerdesValue(serdes.custom_collection.value);
     }
 }
 
@@ -4820,10 +4825,10 @@ void PortsOrch::doPortTask(Consumer &consumer)
                         m_portList[p.m_alias] = p;
                         updatePortStatePoll(p, PORT_STATE_POLL_LT, pCfg.link_training.value);
 
-                        // Restore pre-emphasis when LT is transitioned from ON to OFF
+                        // Restore serdes attributes when LT is transitioned from ON to OFF
                         if (!p.m_link_training && serdes_attr.empty())
                         {
-                            serdes_attr = p.m_preemphasis;
+                            serdes_attr = p.m_serdes_attrs;
                         }
 
                         SWSS_LOG_NOTICE(
@@ -5336,8 +5341,8 @@ void PortsOrch::doPortTask(Consumer &consumer)
                 {
                     if (p.m_link_training)
                     {
-                        SWSS_LOG_NOTICE("Save port %s preemphasis for LT", p.m_alias.c_str());
-                        p.m_preemphasis = serdes_attr;
+                        SWSS_LOG_NOTICE("Save port %s serdes attributes for LT", p.m_alias.c_str());
+                        p.m_serdes_attrs = serdes_attr;
                         m_portList[p.m_alias] = p;
                     }
                     else
@@ -5359,7 +5364,7 @@ void PortsOrch::doPortTask(Consumer &consumer)
                         if (setPortSerdesAttribute(p.m_port_id, gSwitchId, serdes_attr))
                         {
                             SWSS_LOG_NOTICE("Set port %s SI settings is successful", p.m_alias.c_str());
-                            p.m_preemphasis = serdes_attr;
+                            p.m_serdes_attrs = serdes_attr;
                             m_portList[p.m_alias] = p;
                         }
                         else
@@ -10097,7 +10102,7 @@ bool PortsOrch::removeAclTableGroup(const Port &p)
 }
 
 bool PortsOrch::setPortSerdesAttribute(sai_object_id_t port_id, sai_object_id_t switch_id,
-                                       map<sai_port_serdes_attr_t, vector<uint32_t>> &serdes_attr)
+                                       map<sai_port_serdes_attr_t, SerdesValue> &serdes_attr)
 {
     SWSS_LOG_ENTER();
 
@@ -10183,12 +10188,15 @@ bool PortsOrch::setPortSerdesAttribute(sai_object_id_t port_id, sai_object_id_t 
     for (auto it = serdes_attr.begin(); it != serdes_attr.end(); it++)
     {
         port_serdes_attr.id = it->first;
-        port_serdes_attr.value.u32list.count = (uint32_t)it->second.size();
-        port_serdes_attr.value.u32list.list = it->second.data();
+
+        // Use boost::variant visitor to handle both vector and string types
+        boost::apply_visitor(SerdesValueVisitor(port_serdes_attr), it->second);
+
         attr_list.emplace_back(port_serdes_attr);
     }
+    assert(serdes_attr.size() + 1 == attr_list.size());
     status = sai_port_api->create_port_serdes(&port_serdes_id, switch_id,
-                                              static_cast<uint32_t>(serdes_attr.size()+1),
+                                              static_cast<uint32_t>(attr_list.size()),
                                               attr_list.data());
 
     if (status != SAI_STATUS_SUCCESS)
@@ -10665,8 +10673,8 @@ bool PortsOrch::initGearboxPort(Port &port)
             m_gbcounterTable->set("", fields);
 
             /* Set serdes tx taps on system and line side */
-            map<sai_port_serdes_attr_t, vector<uint32_t>> serdes_attr;
-            typedef pair<sai_port_serdes_attr_t, vector<uint32_t>> serdes_attr_pair;
+            map<sai_port_serdes_attr_t, SerdesValue> serdes_attr;
+            typedef pair<sai_port_serdes_attr_t, SerdesValue> serdes_attr_pair;
             vector<uint32_t> attr_val;
             for (auto pair: tx_fir_strings_system_side) {
                 if (m_gearboxInterfaceMap[port.m_index].tx_firs.find(pair.first) != m_gearboxInterfaceMap[port.m_index].tx_firs.end() ) {
@@ -10679,11 +10687,11 @@ bool PortsOrch::initGearboxPort(Port &port)
             {
                 if (setPortSerdesAttribute(systemPort, phyOid, serdes_attr))
                 {
-                    SWSS_LOG_NOTICE("Set port %s system side preemphasis is success", port.m_alias.c_str());
+                    SWSS_LOG_NOTICE("Set port %s system side serdes attributes is success", port.m_alias.c_str());
                 }
                 else
                 {
-                    SWSS_LOG_ERROR("Failed to set port %s system side pre-emphasis", port.m_alias.c_str());
+                    SWSS_LOG_ERROR("Failed to set port %s system side serdes attributes", port.m_alias.c_str());
                     return false;
                 }
             }
@@ -10699,11 +10707,11 @@ bool PortsOrch::initGearboxPort(Port &port)
             {
                 if (setPortSerdesAttribute(linePort, phyOid, serdes_attr))
                 {
-                    SWSS_LOG_NOTICE("Set port %s line side preemphasis is success", port.m_alias.c_str());
+                    SWSS_LOG_NOTICE("Set port %s line side serdes attributes is success", port.m_alias.c_str());
                 }
                 else
                 {
-                    SWSS_LOG_ERROR("Failed to set port %s line side pre-emphasis", port.m_alias.c_str());
+                    SWSS_LOG_ERROR("Failed to set port %s line side serdes attributes", port.m_alias.c_str());
                     return false;
                 }
             }

@@ -390,7 +390,7 @@ namespace portphyattr_test
         gPortsOrch->m_portList["Ethernet-IB0"] = inb_port;
         gPortsOrch->saiOidToAlias[inb_oid] = "Ethernet-IB0";
 
-        std::map<sai_port_serdes_attr_t, std::vector<uint32_t>> serdes_attr;
+        std::map<sai_port_serdes_attr_t, SerdesValue> serdes_attr;
 
         g_serdes_id_queried_port_ids.clear();
         EXPECT_TRUE(gPortsOrch->setPortSerdesAttribute(rec_oid, gSwitchId, serdes_attr));
