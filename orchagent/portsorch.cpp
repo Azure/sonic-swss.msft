@@ -3517,7 +3517,7 @@ bool PortsOrch::initPort(const PortConfig &port)
                 if ((flex_counters_orch->getQueueCountersState()) || (flex_counters_orch->getQueueWatermarkCountersState()))
                 {
                      auto maxQueueNumber = static_cast<uint32_t>(p.m_queue_ids.size());
-                     addPortBufferQueueCounters(p, 0, maxQueueNumber-1, false);
+                     addPortBufferQueueCounters(p, 0, maxQueueNumber-1, true);
                 }
 
                 if ((flex_counters_orch->getPgCountersState()) || (flex_counters_orch->getPgWatermarkCountersState()))
@@ -3582,7 +3582,7 @@ void PortsOrch::deInitPort(string alias, sai_object_id_t port_id)
     {
          // Remove the Port Queues from COUNTERS_DB
          auto maxQueueNumber = static_cast<uint32_t>(p.m_queue_ids.size());
-         deletePortBufferQueueCounters(p, 0, maxQueueNumber-1, false);
+         deletePortBufferQueueCounters(p, 0, maxQueueNumber-1, true);
     }
 
     if ((flex_counters_orch->getPgCountersState()) || (flex_counters_orch->getPgWatermarkCountersState()))
@@ -7605,7 +7605,7 @@ void PortsOrch::addPortBufferQueueCounters(const Port &port, uint32_t startIndex
 
     for (auto queueIndex = startIndex; queueIndex <= endIndex; queueIndex++)
     {
-        if (queueIndex == (uint32_t)port.m_host_tx_queue && skip_host_tx_queue)
+        if (port.m_host_tx_queue_configured && queueIndex == (uint32_t)port.m_host_tx_queue && skip_host_tx_queue)
         {
             continue;
         }
@@ -7670,7 +7670,7 @@ void PortsOrch::deletePortBufferQueueCounters(const Port &port, uint32_t startIn
 
     for (auto queueIndex = startIndex; queueIndex <= endIndex; queueIndex++)
     {
-        if (queueIndex == (uint32_t)port.m_host_tx_queue && skip_host_tx_queue)
+        if (port.m_host_tx_queue_configured && queueIndex == (uint32_t)port.m_host_tx_queue && skip_host_tx_queue)
         {
             continue;
         }
