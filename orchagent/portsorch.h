@@ -492,6 +492,7 @@ private:
 
 
     void removePortSerdesAttribute(sai_object_id_t port_id);
+    bool setPortMediaType(Port& port, const string &media_type);
 
     bool getSaiAclBindPointType(Port::Type                type,
                                 sai_acl_bind_point_type_t &sai_acl_bind_type);
