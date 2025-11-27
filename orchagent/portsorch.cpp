@@ -102,7 +102,8 @@ static map<string, sai_bridge_port_fdb_learning_mode_t> learn_mode_map =
 static map<string, sai_port_media_type_t> media_type_map =
 {
     { "fiber", SAI_PORT_MEDIA_TYPE_FIBER },
-    { "copper", SAI_PORT_MEDIA_TYPE_COPPER }
+    { "copper", SAI_PORT_MEDIA_TYPE_COPPER },
+    { "backplane", SAI_PORT_MEDIA_TYPE_BACKPLANE}
 };
 
 static map<string, sai_port_internal_loopback_mode_t> loopback_mode_map =
@@ -533,6 +534,7 @@ PortsOrch::PortsOrch(DBConnector *db, DBConnector *stateDb, vector<table_name_wi
     /* Initialize port and vlan table */
     m_portTable = unique_ptr<Table>(new Table(db, APP_PORT_TABLE_NAME));
     m_sendToIngressPortTable = unique_ptr<Table>(new Table(db, APP_SEND_TO_INGRESS_PORT_TABLE_NAME));
+    m_systemPortTable = unique_ptr<Table>(new Table(db, APP_SYSTEM_PORT_TABLE_NAME));
 
     /* Initialize gearbox */
     m_gearboxTable = unique_ptr<Table>(new Table(db, "_GEARBOX_TABLE"));
@@ -3468,6 +3470,8 @@ bool PortsOrch::initPort(const PortConfig &port)
             {
                 /* Create associated Gearbox lane mapping */
                 initGearboxPort(p);
+                /* Update system Port information */
+                updateSystemPort(p);
 
                 /* Add port to port list */
                 m_portList[alias] = p;
@@ -4647,6 +4651,21 @@ void PortsOrch::doPortTask(Consumer &consumer)
                             it++;
                             continue;
                         }
+                    }
+                }
+                if (pCfg.media_type.is_set)
+                {
+                    if (setPortMediaType(p, pCfg.media_type.value))
+                    {
+                        SWSS_LOG_NOTICE("Set port %s Media Type %s is successful",
+                                         p.m_alias.c_str(), pCfg.media_type.value.c_str());
+                    }
+                    else
+                    {
+                        SWSS_LOG_ERROR("Failed to set port %s Media Type %s",
+                                        p.m_alias.c_str(), pCfg.media_type.value.c_str());
+                        it++;
+                        continue;
                     }
                 }
 
@@ -8625,6 +8644,35 @@ void PortsOrch::removePortSerdesAttribute(sai_object_id_t port_id)
     SWSS_LOG_NOTICE("Removed port serdes object 0x%" PRIx64 " for port 0x%" PRIx64, port_serdes_id, port_id);
 }
 
+bool PortsOrch::setPortMediaType(Port& port, const string &media_type)
+{
+    sai_attribute_t attr;
+    sai_status_t status;
+
+    if (media_type_map.find(media_type) == media_type_map.end())
+    {
+        SWSS_LOG_NOTICE("Invalid media_type:%s for port %s", media_type.c_str(), port.m_alias.c_str());
+        return false;
+    }
+
+    attr.id = SAI_PORT_ATTR_MEDIA_TYPE;
+    attr.value.u32 = media_type_map[media_type];
+    status = sai_port_api->set_port_attribute(port.m_port_id, &attr);
+    if (status != SAI_STATUS_SUCCESS)
+    {
+        SWSS_LOG_ERROR("Failed to set Media Type %s 0x%x to port %s, rv:%d",
+                media_type.c_str(), attr.value.u32, port.m_alias.c_str(), status);
+        task_process_status handle_status = handleSaiSetStatus(SAI_API_PORT, status);
+        if (handle_status != task_success)
+        {
+            return parseHandleSaiStatusFailure(handle_status);
+        }
+    }
+    port.m_media_type = media_type;
+    SWSS_LOG_INFO("Set Media Type %s 0x%x to port pid:%" PRIx64, media_type.c_str(), attr.value.u32, port.m_port_id);
+    return true;
+}
+
 void PortsOrch::getPortSerdesVal(const std::string& val_str,
                                  std::vector<uint32_t> &lane_values,
                                  int base)
@@ -9154,7 +9202,10 @@ bool PortsOrch::getSystemPorts()
                     attr.value.sysportconfig.attached_core_index,
                     attr.value.sysportconfig.attached_core_port_index);
 
-            m_systemPortOidMap[sp_key] = system_port_list[i];
+            systemPortMapInfo system_port_info;
+            system_port_info.system_port_id = system_port_list[i];
+            m_systemPortOidMap[sp_key] = system_port_info;
+
         }
     }
 
@@ -9240,7 +9291,7 @@ bool PortsOrch::addSystemPorts()
             sai_status_t status;
 
             //Retrive system port config info and enable
-            system_port_oid = m_systemPortOidMap[sp_key];
+            system_port_oid = m_systemPortOidMap[sp_key].system_port_id;
 
             attr.id = SAI_SYSTEM_PORT_ATTR_TYPE;
             attrs.push_back(attr);
@@ -9303,6 +9354,10 @@ bool PortsOrch::addSystemPorts()
             port.m_system_port_info.speed = attrs[1].value.sysportconfig.speed;
             port.m_system_port_info.num_voq = attrs[1].value.sysportconfig.num_voq;
 
+            //Update the system Port Info to the m_systemPortOidMap to be used later when the Port Speed is changed dynamically
+            m_systemPortOidMap[sp_key].system_port_info = port.m_system_port_info;
+            m_systemPortOidMap[sp_key].info_valid = true;
+
             initializeVoqs( port );
             setPort(port.m_alias, port);
             /* Add system port name map to counter table */
@@ -9331,6 +9386,71 @@ bool PortsOrch::addSystemPorts()
     return true;
 }
 
+void PortsOrch::updateSystemPort(Port &port)
+{
+     if (!m_initDone)
+     {
+         //addSystemPorts will update the system port
+         return;
+     }
+
+     if ((gMySwitchType == "voq") && (port.m_type == Port::PHY))
+     {
+        auto system_port_alias = gMyHostName + "|" + gMyAsicName + "|" + port.m_alias;
+        vector<FieldValueTuple> spFv;
+
+        //Retrieve system port configurations from APP DB
+        m_systemPortTable->get(system_port_alias, spFv);
+
+        int32_t switch_id = -1;
+        int32_t core_index = -1;
+        int32_t core_port_index = -1;
+
+        for ( auto &fv : spFv )
+        {
+             if(fv.first == "switch_id")
+             {
+                switch_id = stoi(fv.second);
+                continue;
+             }
+             if(fv.first == "core_index")
+             {
+                core_index = stoi(fv.second);
+                continue;
+             }
+             if(fv.first == "core_port_index")
+             {
+                core_port_index = stoi(fv.second);
+                continue;
+             }
+             if(switch_id < 0 || core_index < 0 || core_port_index < 0)
+             {
+                continue;
+             }
+             tuple<int, int, int> sp_key(switch_id, core_index, core_port_index);
+
+             if(m_systemPortOidMap.find(sp_key) != m_systemPortOidMap.end())
+             {
+                 auto system_port = m_systemPortOidMap[sp_key];
+                 // Check if the system_port_info is already populated in m_systemPortOidMap.
+                 if(system_port.info_valid)
+                 {
+                     port.m_system_port_oid = system_port.system_port_id;
+                     port.m_system_port_info = system_port.system_port_info;
+                     port.m_system_port_info.local_port_oid = port.m_port_id;
+                     //initializeVoqs(port);
+                     SWSS_LOG_NOTICE("Updated system port for %s with  system_port_alias:%s switch_id:%d, core_index:%d, core_port_index:%d",
+                                port.m_alias.c_str(), system_port.system_port_info.alias.c_str(), system_port.system_port_info.switch_id,
+                                system_port.system_port_info.core_index, system_port.system_port_info.core_port_index);
+                 }
+             }
+        }
+        if(port.m_system_port_info.alias.empty())
+        {
+            SWSS_LOG_ERROR("SYSTEM PORT Information is not updated for %s", port.m_alias.c_str());
+        }
+     }
+}
 bool PortsOrch::getInbandPort(Port &port)
 {
     if (m_portList.find(m_inbandPortName) == m_portList.end())
