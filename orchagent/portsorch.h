@@ -515,7 +515,7 @@ private:
     map<string, Port::Role> m_recircPortRole;
 
     //map key is tuple of <attached_switch_id, core_index, core_port_index>
-    map<tuple<int, int, int>, sai_object_id_t> m_systemPortOidMap;
+    sai_uint32_t m_systemPortCount;
     map<tuple<int, int, int>, systemPortMapInfo> m_systemPortOidMap;
     bool getSystemPorts();
     bool addSystemPorts();
