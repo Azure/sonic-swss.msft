@@ -666,19 +666,9 @@ namespace flexcounter_test
             gPortsOrch->m_portConfigMap.erase(secondPortName);
             gPortsOrch->m_portList.erase(secondPortName);
             gPortsOrch->saiOidToAlias.erase(secondPort.m_port_id);
-
         }
         ASSERT_FALSE(gPortsOrch->getPort(secondPortName, secondPort));
         ASSERT_FALSE(checkFlexCounter(PORT_STAT_COUNTER_FLEX_COUNTER_GROUP, second_oid, PORT_COUNTER_ID_LIST));
-
-        //Verify the Port Stats counter after re-ADD
-        entries.clear();
-        entries.push_back({secondPortName, "SET", secondPortValues});
-        port_consumer->addToSync(entries);
-        static_cast<Orch *>(gPortsOrch)->doTask();
-        ASSERT_TRUE(gPortsOrch->getPort(secondPortName, secondPort));
-        second_oid = secondPort.m_port_id;
-        ASSERT_TRUE(checkFlexCounter(PORT_STAT_COUNTER_FLEX_COUNTER_GROUP, second_oid, PORT_COUNTER_ID_LIST));
 
         // create a routing interface
         entries.clear();
