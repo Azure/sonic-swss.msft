@@ -2131,7 +2131,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 [[package]]
 name = "swss-common"
 version = "0.1.0"
-source = "git+https://github.com/Azure/sonic-swss-common.msft.git?branch=202412#66ac80ee21460f22c5c334cdc620a961c0bd7e2c"
+source = "git+https://github.com/Azure/sonic-swss-common.msft.git?branch=202412#09b150e4948fe07a2e2a9d1071fefbfcdeb6f087"
 dependencies = [
  "bindgen",
  "getset",
