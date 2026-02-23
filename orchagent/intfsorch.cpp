@@ -591,7 +591,7 @@ bool IntfsOrch::setIntf(const string& alias, sai_object_id_t vrf_id, const IpPre
         if (overlaps)
         {
             /* Overlap of IP address network */
-            return false;
+            return true;
         }
     }
 
