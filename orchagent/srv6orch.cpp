@@ -1549,28 +1549,7 @@ bool Srv6Orch::createUpdateMysidEntry(string my_sid_string, const string dt_vrf,
     sai_tunnel_dscp_mode_t dscp_mode;
     if (mySidTunnelRequired(my_sid_string, my_sid_entry, end_behavior, dscp_mode))
     {
-        sai_object_id_t tunnel_oid;
-        auto ok = createMySidIpInIpTunnel(dscp_mode, tunnel_oid);
-        if (!ok)
-        {
-            return false;
-        }
-
-        sai_object_id_t term_entry_oid;
-        ok = createMySidIpInIpTunnelTermEntry(tunnel_oid, my_sid_entry.sid, term_entry_oid);
-        if (!ok)
-        {
-            removeMySidIpInIpTunnel(dscp_mode);
-            return false;
-        }
-
-        srv6_my_sid_table_[key_string].tunnel_term_entry = term_entry_oid;
         srv6_my_sid_table_[key_string].dscp_mode = dscp_mode;
-
-        attr.id = SAI_MY_SID_ENTRY_ATTR_TUNNEL_ID;
-        attr.value.oid = tunnel_oid;
-        attributes.push_back(attr);
-
         end_flavor = SAI_MY_SID_ENTRY_ENDPOINT_BEHAVIOR_FLAVOR_USD;
     }
 
