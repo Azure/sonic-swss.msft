@@ -667,16 +667,6 @@ impl IpfixActor {
             self.object_id_name_map.remove(&templates.key);
         }
 
-        // Update object name mapping for the session key.
-        // A missing object_names field means the latest template update no longer
-        // provides object name mapping, so any stale value must be cleared.
-        if let Some(object_names) = &templates.object_names {
-            self.object_names_map
-                .insert(templates.key.clone(), object_names.clone());
-        } else {
-            self.object_names_map.remove(&templates.key);
-        }
-
         let cache_ref = Self::get_cache();
         let cache = cache_ref.borrow_mut();
         let mut read_size: usize = 0;
@@ -1229,11 +1219,13 @@ mod test {
             String::from("session_a"),
             Arc::new(Vec::from(template_256_bytes)),
             Some(vec!["Ethernet0".to_string(), "Ethernet1".to_string()]),
+            Some(vec![1, 2]),
         ));
         actor.handle_template(IPFixTemplatesMessage::new(
             String::from("session_b"),
             Arc::new(Vec::from(template_257_bytes)),
             Some(vec!["Ethernet8".to_string(), "Ethernet12".to_string()]),
+            Some(vec![1, 2]),
         ));
 
         let valid_records_bytes: [u8; 144] = [
@@ -1298,21 +1290,23 @@ mod test {
             String::from("session_a"),
             Arc::new(Vec::from(template_bytes)),
             Some(vec!["Ethernet0".to_string(), "Ethernet1".to_string()]),
+            Some(vec![1, 2]),
         ));
-        assert_eq!(
-            actor.object_names_map.get("session_a"),
-            Some(&vec!["Ethernet0".to_string(), "Ethernet1".to_string()])
-        );
+        let mut expected = HashMap::new();
+        expected.insert(1u16, "Ethernet0".to_string());
+        expected.insert(2u16, "Ethernet1".to_string());
+        assert_eq!(actor.object_id_name_map.get("session_a"), Some(&expected));
 
         actor.handle_template(IPFixTemplatesMessage::new(
             String::from("session_a"),
             Arc::new(Vec::from(template_bytes)),
             None,
+            None,
         ));
 
         assert!(
-            actor.object_names_map.get("session_a").is_none(),
-            "stale object_names should be cleared when a template update omits them"
+            actor.object_id_name_map.get("session_a").is_none(),
+            "stale object_id_name_map entries should be cleared when a template update omits object metadata"
         );
     }
 
