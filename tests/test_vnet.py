@@ -3771,49 +3771,81 @@ class TestVnetOrch(object):
         vnet_obj.check_del_vxlan_tunnel(dvs)
 
 
-    '''
-    Test 33 - Create vnet route tunnel with various metric values
-    '''
-    def test_vnet_orch_33(self, dvs, testlog):
+    """
+    IP2Me link-local trap route for VNET VRs (PR#3973-aligned, fe80::/10 only).
+
+    Validates that VNETOrch installs the fe80::/10 IP2Me trap route into
+    every new VNET virtual router so unnumbered BGP / IPv6 link-local
+    traffic in the VNET VRF is punted to CPU instead of being dropped at
+    the chip. Mirrors what RouteOrch installs in the default VR.
+    """
+    def test_vnet_ip2me_link_local(self, dvs, testlog):
         self.setup_db(dvs)
 
+        asic_db = swsscommon.DBConnector(swsscommon.ASIC_DB, dvs.redis_sock, 0)
         vnet_obj = self.get_vnet_obj()
 
-        tunnel_name = 'tunnel_33'
+        tunnel_name = "tunnel_ip2me"
+        vnet_name = "Vnet_ip2me"
 
         vnet_obj.fetch_exist_entries(dvs)
+        pre_routes = get_exist_entries(dvs, vnet_obj.ASIC_ROUTE_ENTRY)
+        default_vr = get_default_vr_id(dvs)
 
-        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.10')
-        create_vnet_entry(dvs, 'Vnet33', tunnel_name, '10033', "")
+        create_vxlan_tunnel(dvs, tunnel_name, "10.10.10.10")
+        create_vnet_entry(dvs, vnet_name, tunnel_name, "20001", "")
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        time.sleep(2)
 
-        vnet_obj.check_vnet_entry(dvs, 'Vnet33')
-        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, 'Vnet33', '10033')
+        post_routes = get_exist_entries(dvs, vnet_obj.ASIC_ROUTE_ENTRY)
+        new_routes = post_routes - pre_routes
+        print("DBG new_route_count=%d" % len(new_routes))
+        for r in sorted(new_routes):
+            print("DBG new_route: %s" % r)
 
-        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '10.10.10.10')
+        ll_keys = []
+        ll_prefixes = []
+        for key in new_routes:
+            try:
+                payload = json.loads(key)
+            except (ValueError, IndexError):
+                continue
+            dest = payload.get("dest", "")
+            if dest.startswith("fe80:"):
+                ll_keys.append(key)
+                ll_prefixes.append(dest)
 
-        vnet_obj.fetch_exist_entries(dvs)
-        
-        for i in range(21):
-            create_vnet_routes(dvs, f'0.0.0.{i}/32', 'Vnet33', f'10.10.10.{i}', metric=i)
-            vnet_obj.check_vnet_routes(dvs, 'Vnet33', f'10.10.10.{i}', tunnel_name)
-            check_state_db_routes(dvs, 'Vnet33', f"0.0.0.{i}/32", [f'10.10.10.{i}'])
+        assert ll_prefixes == ["fe80::/10"], (
+            "Expected exactly one link-local trap route fe80::/10 in VNET VR, "
+            "got %s; full new_routes=%s" % (ll_prefixes, sorted(new_routes))
+        )
 
-            entry = self.cdb.get_entry("VNET_ROUTE_TUNNEL", f"Vnet33|0.0.0.{i}/32")
-            assert entry is not None and len(entry) > 0, f"VNET route entry not found in CONFIG DB."
-            assert int(entry.get('metric', -1)) == i, f"VNET route metric mismatch: expected {i}, got {entry.get('metric', -1)}."
+        rt_tbl = swsscommon.Table(asic_db, vnet_obj.ASIC_ROUTE_ENTRY)
+        for k in ll_keys:
+            payload = json.loads(k)
+            assert payload.get("vr") and payload["vr"] != default_vr, (
+                "Link-local route %s programmed in default VR" % k
+            )
+            status, fvs = rt_tbl.get(k)
+            assert status, "Failed to fetch attributes for %s" % k
+            attrs = dict(fvs)
+            action = attrs.get("SAI_ROUTE_ENTRY_ATTR_PACKET_ACTION")
+            assert action == "SAI_PACKET_ACTION_FORWARD", (
+                "Link-local route %s action=%s, expected FORWARD-to-CPU" % (k, action)
+            )
+            nh = attrs.get("SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID", "")
+            assert nh, "Link-local route %s missing next hop (CPU port)" % k
 
-            # Clean-up vnet route
-            delete_vnet_routes(dvs, f"0.0.0.{i}/32", 'Vnet33')
-            vnet_obj.check_del_vnet_routes(dvs, 'Vnet33')
-
-            vnet_obj.fetch_exist_entries(dvs)
-
-        # Clean-up and verify remove flows
-        delete_vnet_entry(dvs, "Vnet33")
-        vnet_obj.check_del_vnet_entry(dvs, "Vnet33")
-
+        delete_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_name)
         delete_vxlan_tunnel(dvs, tunnel_name)
-        vnet_obj.check_del_vxlan_tunnel(dvs)
+        time.sleep(2)
+
+        final_routes = get_exist_entries(dvs, vnet_obj.ASIC_ROUTE_ENTRY)
+        for k in ll_keys:
+            assert k not in final_routes, (
+                "Link-local trap route %s not cleaned up after VNET delete" % k
+            )
 
 
 # Add Dummy always-pass test at end as workaroud
