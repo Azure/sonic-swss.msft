@@ -3275,6 +3275,501 @@ class TestVnetOrch(object):
         self.remove_ip_address("Ethernet12", "9.1.0.4/32")
         self.set_admin_status("Ethernet12", "down")
 
+    '''
+    Test 33 - Create vnet route tunnel with various metric values
+    '''
+    def test_vnet_orch_33(self, dvs, testlog):
+        self.setup_db(dvs)
+
+        vnet_obj = self.get_vnet_obj()
+
+        tunnel_name = 'tunnel_33'
+
+        vnet_obj.fetch_exist_entries(dvs)
+
+        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.10')
+        create_vnet_entry(dvs, 'Vnet33', tunnel_name, '10033', "")
+
+        vnet_obj.check_vnet_entry(dvs, 'Vnet33')
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, 'Vnet33', '10033')
+
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '10.10.10.10')
+
+        vnet_obj.fetch_exist_entries(dvs)
+        
+        for i in range(21):
+            create_vnet_routes(dvs, f'0.0.0.{i}/32', 'Vnet33', f'10.10.10.{i}', metric=i)
+            vnet_obj.check_vnet_routes(dvs, 'Vnet33', f'10.10.10.{i}', tunnel_name)
+            check_state_db_routes(dvs, 'Vnet33', f"0.0.0.{i}/32", [f'10.10.10.{i}'])
+
+            entry = self.cdb.get_entry("VNET_ROUTE_TUNNEL", f"Vnet33|0.0.0.{i}/32")
+            assert entry is not None and len(entry) > 0, f"VNET route entry not found in CONFIG DB."
+            assert int(entry.get('metric', -1)) == i, f"VNET route metric mismatch: expected {i}, got {entry.get('metric', -1)}."
+
+            # Clean-up vnet route
+            delete_vnet_routes(dvs, f"0.0.0.{i}/32", 'Vnet33')
+            vnet_obj.check_del_vnet_routes(dvs, 'Vnet33')
+
+            vnet_obj.fetch_exist_entries(dvs)
+
+        # Clean-up and verify remove flows
+        delete_vnet_entry(dvs, "Vnet33")
+        vnet_obj.check_del_vnet_entry(dvs, "Vnet33")
+
+        delete_vxlan_tunnel(dvs, tunnel_name)
+        vnet_obj.check_del_vxlan_tunnel(dvs)
+
+
+    '''
+    Test 34 - Test for DPU repairing (live update endpoint IPs) + local endpoint + custom bfd monitoring
+    '''
+    def test_vnet_orch_34(self, dvs, testlog):
+        self.setup_db(dvs)
+
+        vnet_obj = self.get_vnet_obj()
+        tunnel_name = 'tunnel_34'
+        vnet_name = 'vnet34'
+        asic_db = swsscommon.DBConnector(swsscommon.ASIC_DB, dvs.redis_sock, 0)
+
+        vnet_obj.fetch_exist_entries(dvs)
+
+        create_vxlan_tunnel(dvs, tunnel_name, '9.9.9.9')
+        create_vnet_entry(dvs, vnet_name, tunnel_name, '10029', "", advertise_prefix=True, overlay_dmac="22:33:33:44:44:66")
+
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, '10029')
+
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '9.9.9.9')
+
+        self.create_l3_intf("Ethernet4", "")
+        self.add_ip_address("Ethernet4", "9.1.0.1/32")
+        self.set_admin_status("Ethernet4", "up")
+        self.add_neighbor("Ethernet4", "9.1.0.1", "00:01:02:03:04:05")
+
+        vnet_obj.fetch_exist_entries(dvs)
+        create_vnet_routes(dvs, "100.100.1.1/32", vnet_name, '9.1.0.1,9.1.0.2', ep_monitor='9.1.0.1,9.1.0.2', primary ='9.1.0.1', monitoring='custom_bfd', adv_prefix='100.100.1.1/32', check_directly_connected=True, rx_monitor_timer=100, tx_monitor_timer=100)
+
+        # default monitor status is down, route should not be programmed in this status
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, ["100.100.1.1/32"])
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", [])
+        check_remove_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Route should be properly configured when all monitor session states go up. Only primary Endpoints should be in use.
+        update_bfd_session_state(dvs, '9.1.0.1', 'Up')
+        update_bfd_session_state(dvs, '9.1.0.2', 'Up')
+        time.sleep(2)
+        route1 = vnet_obj.check_priority_vnet_ecmp_routes(dvs, vnet_name, ['9.1.0.1'], tunnel_name)
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", ['9.1.0.1'])
+        check_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Re-pairing and change primary to remote
+        create_vnet_routes(dvs, "100.100.1.1/32", vnet_name, '9.1.0.1,9.1.0.3', ep_monitor='9.1.0.1,9.1.0.3', primary ='9.1.0.3', monitoring='custom_bfd', adv_prefix='100.100.1.1/32', check_directly_connected=True, rx_monitor_timer=100, tx_monitor_timer=100)
+
+        # BFD session should have been removed for the old remote endpoint
+        check_del_bfd_session(dvs, ['9.1.0.2'])
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", ['9.1.0.1'])
+
+        update_bfd_session_state(dvs, '9.1.0.3', 'Up')
+        time.sleep(2)
+        route1 = vnet_obj.check_priority_vnet_ecmp_routes(dvs, vnet_name, ['9.1.0.3'], tunnel_name)
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", ['9.1.0.3'])
+        check_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Remove tunnel route 1
+        delete_vnet_routes(dvs, "100.100.1.1/32", vnet_name)
+        time.sleep(2)
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, ["100.100.1.1/32"])
+        check_remove_state_db_routes(dvs, vnet_name, "100.100.1.1/32")
+        check_remove_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Confirm the monitor sessions are removed
+        check_del_bfd_session(dvs, ['9.1.0.1', '9.1.0.2', '9.1.0.3'])
+
+        delete_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_name)
+        delete_vxlan_tunnel(dvs, tunnel_name)
+
+        self.remove_neighbor("Ethernet4", "9.1.0.1")
+        self.remove_ip_address("Ethernet4", "9.1.0.1/32")
+        self.set_admin_status("Ethernet4", "down")
+
+    '''
+    Test 35 - Test for DPU repairing with DPUs under same NPUs (live update monitor IPs)
+    '''
+    def test_vnet_orch_35(self, dvs, testlog):
+        self.setup_db(dvs)
+
+        vnet_obj = self.get_vnet_obj()
+        tunnel_name = 'tunnel_35'
+        vnet_name = 'vnet35'
+        asic_db = swsscommon.DBConnector(swsscommon.ASIC_DB, dvs.redis_sock, 0)
+
+        vnet_obj.fetch_exist_entries(dvs)
+
+        create_vxlan_tunnel(dvs, tunnel_name, '9.9.9.9')
+        create_vnet_entry(dvs, vnet_name, tunnel_name, '10029', "", advertise_prefix=True, overlay_dmac="22:33:33:44:44:66")
+
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, '10029')
+
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '9.9.9.9')
+
+        self.create_l3_intf("Ethernet4", "")
+        self.add_ip_address("Ethernet4", "9.1.0.1/32")
+        self.set_admin_status("Ethernet4", "up")
+        self.add_neighbor("Ethernet4", "9.1.0.1", "00:01:02:03:04:05")
+
+        vnet_obj.fetch_exist_entries(dvs)
+        create_vnet_routes(dvs, "100.100.1.1/32", vnet_name, '9.1.0.1,9.1.0.2', ep_monitor='9.1.0.1,10.1.0.1', primary ='9.1.0.1', monitoring='custom_bfd', adv_prefix='100.100.1.1/32', check_directly_connected=True, rx_monitor_timer=100, tx_monitor_timer=100)
+
+        # default monitor status is down, route should not be programmed in this status
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, ["100.100.1.1/32"])
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", [])
+        check_remove_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Route should be properly configured when all monitor session states go up. Only primary Endpoints should be in use.
+        update_bfd_session_state(dvs, '9.1.0.1', 'Up')
+        update_bfd_session_state(dvs, '10.1.0.1', 'Up')
+        time.sleep(2)
+        route1 = vnet_obj.check_priority_vnet_ecmp_routes(dvs, vnet_name, ['9.1.0.1'], tunnel_name)
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", ['9.1.0.1'])
+        check_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Re-pairing and change remote DPU to a different one under same NPU (ep list remain the same)
+        create_vnet_routes(dvs, "100.100.1.1/32", vnet_name, '9.1.0.1,9.1.0.2', ep_monitor='9.1.0.1,10.1.0.2', primary ='9.1.0.1', monitoring='custom_bfd', adv_prefix='100.100.1.1/32', check_directly_connected=True, rx_monitor_timer=100, tx_monitor_timer=100)
+
+        # BFD session should have been removed for the old remote endpoint
+        check_del_bfd_session(dvs, ['10.1.0.1'])
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", ['9.1.0.1'])
+        update_bfd_session_state(dvs, '10.1.0.2', 'Up')
+        time.sleep(2)
+        route1 = vnet_obj.check_priority_vnet_ecmp_routes(dvs, vnet_name, ['9.1.0.1'], tunnel_name)
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", ['9.1.0.1'])
+        check_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Re-pairing and change primary as well
+        create_vnet_routes(dvs, "100.100.1.1/32", vnet_name, '9.1.0.1,9.1.0.2', ep_monitor='9.1.0.1,10.1.0.3', primary ='9.1.0.2', monitoring='custom_bfd', adv_prefix='100.100.1.1/32', check_directly_connected=True, rx_monitor_timer=100, tx_monitor_timer=100)
+
+        # BFD session should have been removed for the old remote endpoint
+        check_del_bfd_session(dvs, ['10.1.0.2'])
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", ['9.1.0.1'])
+        update_bfd_session_state(dvs, '10.1.0.3', 'Up')
+        time.sleep(2)
+        route1 = vnet_obj.check_priority_vnet_ecmp_routes(dvs, vnet_name, ['9.1.0.2'], tunnel_name)
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", ['9.1.0.2'])
+        check_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Re-pairing back to original remote and primary
+        create_vnet_routes(dvs, "100.100.1.1/32", vnet_name, '9.1.0.1,9.1.0.2', ep_monitor='9.1.0.1,10.1.0.1', primary ='9.1.0.1', monitoring='custom_bfd', adv_prefix='100.100.1.1/32', check_directly_connected=True, rx_monitor_timer=100, tx_monitor_timer=100)
+
+        check_del_bfd_session(dvs, ['10.1.0.3'])
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", ['9.1.0.1'])
+        update_bfd_session_state(dvs, '10.1.0.1', 'Up')
+        time.sleep(2)
+        route1 = vnet_obj.check_priority_vnet_ecmp_routes(dvs, vnet_name, ['9.1.0.1'], tunnel_name)
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", ['9.1.0.1'])
+        check_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Remove tunnel route 1
+        delete_vnet_routes(dvs, "100.100.1.1/32", vnet_name)
+        time.sleep(2)
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, ["100.100.1.1/32"])
+        check_remove_state_db_routes(dvs, vnet_name, "100.100.1.1/32")
+        check_remove_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Confirm the monitor sessions are removed
+        check_del_bfd_session(dvs, ['9.1.0.1', '10.1.0.1'])
+
+        delete_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_name)
+        delete_vxlan_tunnel(dvs, tunnel_name)
+
+        self.remove_neighbor("Ethernet4", "9.1.0.1")
+        self.remove_ip_address("Ethernet4", "9.1.0.1/32")
+        self.set_admin_status("Ethernet4", "down")
+
+
+    '''
+    Test 36 - Test for pinned state change
+    '''
+    def test_vnet_orch_36(self, dvs, testlog):
+        self.setup_db(dvs)
+
+        vnet_obj = self.get_vnet_obj()
+        tunnel_name = 'tunnel_36'
+        vnet_name = 'vnet36'
+        asic_db = swsscommon.DBConnector(swsscommon.ASIC_DB, dvs.redis_sock, 0)
+
+        vnet_obj.fetch_exist_entries(dvs)
+
+        create_vxlan_tunnel(dvs, tunnel_name, '9.9.9.9')
+        create_vnet_entry(dvs, vnet_name, tunnel_name, '10029', "", advertise_prefix=True, overlay_dmac="22:33:33:44:44:66")
+
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, '10029')
+
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '9.9.9.9')
+
+        self.create_l3_intf("Ethernet4", "")
+        self.add_ip_address("Ethernet4", "9.1.0.1/32")
+        self.set_admin_status("Ethernet4", "up")
+        self.add_neighbor("Ethernet4", "9.1.0.1", "00:01:02:03:04:05")
+
+        '''
+        Local Endpoint: (DPU)9.1.0.1
+        Remote Endpoints: (NPU)10.1.0.1 -> (DPU)9.1.0.2
+        '''
+        vnet_obj.fetch_exist_entries(dvs)
+        create_vnet_routes(dvs, "100.100.1.1/32", vnet_name, '9.1.0.1,10.1.0.1', ep_monitor='9.1.0.1,9.1.0.2', primary ='9.1.0.1', monitoring='custom_bfd', adv_prefix='100.100.1.1/32', check_directly_connected=True, rx_monitor_timer=100, tx_monitor_timer=100, pinned_state="none,none")
+
+        # default monitor status is down, route should not be programmed in this status
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, ["100.100.1.1/32"])
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", [])
+        check_remove_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Route should be properly configured when all monitor session states go up. Only primary Endpoints should be in use.
+        update_bfd_session_state(dvs, '9.1.0.1', 'Up')
+        update_bfd_session_state(dvs, '9.1.0.2', 'Up')
+        time.sleep(2)
+        vnet_obj.check_priority_vnet_ecmp_routes(dvs, vnet_name, ['9.1.0.1'], tunnel_name)
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", ['9.1.0.1'])
+        check_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Pinned state change, set primary's pinned state to down, route should switch to backup endpoint
+        create_vnet_routes(dvs, "100.100.1.1/32", vnet_name, '9.1.0.1,10.1.0.1', ep_monitor='9.1.0.1,9.1.0.2', primary ='9.1.0.1', monitoring='custom_bfd', pinned_state="down,none")
+        time.sleep(2)
+        vnet_obj.check_priority_vnet_ecmp_routes(dvs, vnet_name, ['10.1.0.1'], tunnel_name)
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", ['10.1.0.1'])
+        check_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Pinned state change, set primary's pinned state to none, route should come up with primary endpoint
+        create_vnet_routes(dvs, "100.100.1.1/32", vnet_name, '9.1.0.1,10.1.0.1', ep_monitor='9.1.0.1,9.1.0.2', primary ='9.1.0.1', monitoring='custom_bfd', pinned_state="none,none")
+        time.sleep(2)
+        vnet_obj.check_priority_vnet_ecmp_routes(dvs, vnet_name, ['9.1.0.1'], tunnel_name)
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", ['9.1.0.1'])
+        check_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Pinned state change, set primary's pinned state to up, route should remain on primary endpoint when BFD is down
+        create_vnet_routes(dvs, "100.100.1.1/32", vnet_name, '9.1.0.1,10.1.0.1', ep_monitor='9.1.0.1,9.1.0.2', primary ='9.1.0.1', monitoring='custom_bfd', pinned_state="up,none")
+        update_bfd_session_state(dvs, '9.1.0.1', 'Down')
+        time.sleep(2)
+        vnet_obj.check_priority_vnet_ecmp_routes(dvs, vnet_name, ['9.1.0.1'], tunnel_name)
+        check_state_db_routes(dvs, vnet_name, "100.100.1.1/32", ['9.1.0.1'])
+        check_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Remove tunnel route 1
+        delete_vnet_routes(dvs, "100.100.1.1/32", vnet_name)
+        time.sleep(2)
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, ["100.100.1.1/32"])
+        check_remove_state_db_routes(dvs, vnet_name, "100.100.1.1/32")
+        check_remove_routes_advertisement(dvs, "100.100.1.1/32")
+
+        # Confirm the monitor sessions are removed
+        check_del_bfd_session(dvs, ['9.1.0.1', '9.1.0.2'])
+
+        delete_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_name)
+        delete_vxlan_tunnel(dvs, tunnel_name)
+
+        self.remove_neighbor("Ethernet4", "9.1.0.1")
+        self.remove_ip_address("Ethernet4", "9.1.0.1/32")
+        self.set_admin_status("Ethernet4", "down")
+
+    '''
+    ECMP VNET local route with duplicate nexthop IP but different ifname, used for Link Local nexthops learned via FRR/BGP
+    '''
+    '''
+    One VNET + one prefix through 5 phases:
+      A) Create route with 2 ifnames sharing the same nexthop IP -> 2-member NHG,
+         distinct RIFs per member (the duplicate-IP fix).
+      B) Re-issue route with 1 ifname  -> NHG removed, route collapses to a single NH.
+      C) Re-issue route with 2 ifnames -> new 2-member NHG, both RIFs.
+      D) Flap the veth carrier of one ifname DOWN. PortsOrch oper-status change
+         drives NeighOrch.ifChangeInformNextHop -> RouteOrch.invalidnexthopinNextHopGroup,
+         which must implicitly remove the down member from the NHG (no test-driven
+         re-issue of the route). NHG stays, drops to 1 member.
+      E) Flap the veth back UP, re-add the neighbor -> NHG returns to 2 members.
+    '''
+    def test_vnet_local_route_ecmp_unnumbered(self, dvs, testlog):
+        self.setup_db(dvs)
+
+        vnet_obj = self.get_vnet_obj()
+
+        tunnel_name = 'tunnel_ecmp_unified'
+        vnet_name = "Vnet5099"
+        prefix = "10.99.0.0/24"
+        # Ethernet20 -> dvs.servers[5], Ethernet16 -> dvs.servers[4]
+        if_a, srv_a = "Ethernet20", 5
+        if_b, srv_b = "Ethernet16", 4
+        nh_ip = "169.254.0.1"
+        mac_a = "00:01:02:03:04:05"
+        mac_b = "00:01:02:03:04:06"
+
+        vnet_obj.fetch_exist_entries(dvs)
+
+        create_vxlan_tunnel(dvs, tunnel_name, '99.99.99.99')
+        create_vnet_entry(dvs, vnet_name, tunnel_name, '5099', "")
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, '5099')
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '99.99.99.99')
+
+        create_phy_interface(dvs, if_a, vnet_name, "10.77.0.4/30")
+        vnet_obj.check_router_interface(dvs, if_a, vnet_name)
+        create_phy_interface(dvs, if_b, vnet_name, "10.77.0.8/30")
+        vnet_obj.check_router_interface(dvs, if_b, vnet_name)
+
+        self.set_admin_status(if_a, "up")
+        self.set_admin_status(if_b, "up")
+
+        self.add_neighbor(if_a, nh_ip, mac_a)
+        self.add_neighbor(if_b, nh_ip, mac_b)
+
+        vnet_obj.fetch_exist_entries(dvs)
+        base_nhg  = len(vnet_obj.nhgs)
+        base_nhgm = len(vnet_obj.nhgms)
+
+        asic_db_conn = swsscommon.DBConnector(swsscommon.ASIC_DB, dvs.redis_sock, 0)
+        route_tbl = swsscommon.Table(asic_db_conn, "ASIC_STATE:SAI_OBJECT_TYPE_ROUTE_ENTRY")
+        nhg_tbl   = swsscommon.Table(asic_db_conn, "ASIC_STATE:SAI_OBJECT_TYPE_NEXT_HOP_GROUP")
+        nh_tbl    = swsscommon.Table(asic_db_conn, "ASIC_STATE:SAI_OBJECT_TYPE_NEXT_HOP")
+        rif_tbl   = swsscommon.Table(asic_db_conn, "ASIC_STATE:SAI_OBJECT_TYPE_ROUTER_INTERFACE")
+        nhgm_tbl  = swsscommon.Table(asic_db_conn, "ASIC_STATE:SAI_OBJECT_TYPE_NEXT_HOP_GROUP_MEMBER")
+        counters_db = swsscommon.DBConnector(swsscommon.COUNTERS_DB, dvs.redis_sock, 0)
+        port_name_map = counters_db.hgetall("COUNTERS_PORT_NAME_MAP") or {}
+
+        def _rif_for_port(port_name):
+            port_oid = port_name_map.get(port_name)
+            assert port_oid, "no OID for %s" % port_name
+            for rif_key in rif_tbl.getKeys():
+                status, fvs = rif_tbl.get(rif_key)
+                if status and dict(fvs).get("SAI_ROUTER_INTERFACE_ATTR_PORT_ID") == port_oid:
+                    return rif_key
+            assert False, "no RIF for port %s" % port_name
+
+        def _nhgm_rifs(nhg_oid):
+            rifs = set()
+            for k in nhgm_tbl.getKeys():
+                s, f = nhgm_tbl.get(k)
+                f = dict(f)
+                if f.get("SAI_NEXT_HOP_GROUP_MEMBER_ATTR_NEXT_HOP_GROUP_ID") == nhg_oid:
+                    s2, nf = nh_tbl.get(f["SAI_NEXT_HOP_GROUP_MEMBER_ATTR_NEXT_HOP_ID"])
+                    rifs.add(dict(nf).get("SAI_NEXT_HOP_ATTR_ROUTER_INTERFACE_ID"))
+            return rifs
+
+        def _nh_rif(nh_oid):
+            s, f = nh_tbl.get(nh_oid)
+            return dict(f).get("SAI_NEXT_HOP_ATTR_ROUTER_INTERFACE_ID")
+
+        def _wait_route_nh(expect_type, timeout=15):
+            for _ in range(timeout * 2):
+                route_keys = [k for k in route_tbl.getKeys() if prefix in k]
+                if route_keys:
+                    status, fvs = route_tbl.get(route_keys[0])
+                    if status:
+                        oid = dict(fvs).get("SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID")
+                        if oid:
+                            is_nhg = nhg_tbl.get(oid)[0]
+                            is_nh  = nh_tbl.get(oid)[0]
+                            if expect_type == "nhg" and is_nhg:
+                                return oid
+                            if expect_type == "nh" and is_nh and not is_nhg:
+                                return oid
+                time.sleep(0.5)
+            assert False, "route %s NEXT_HOP_ID never resolved to a %s" % (prefix, expect_type)
+
+        def _wait_nhgm_count(want_total, timeout=10):
+            for _ in range(timeout * 2):
+                vnet_obj.fetch_exist_entries(dvs)
+                if len(vnet_obj.nhgms) == want_total:
+                    return
+                time.sleep(0.5)
+            assert False, "NHG member count never reached %d (last: %d)" % (want_total, len(vnet_obj.nhgms))
+
+        rif_a = _rif_for_port(if_a)
+        rif_b = _rif_for_port(if_b)
+
+        # ---- Phase A: 2 ifnames, duplicate IP -> 2-member NHG ----
+        create_vnet_local_routes(dvs, prefix, vnet_name,
+                                 '%s,%s' % (if_a, if_b),
+                                 '%s,%s' % (nh_ip, nh_ip))
+        vnet_obj.check_vnet_local_routes(dvs, vnet_name)
+        nhg_oid_a = _wait_route_nh("nhg")
+        vnet_obj.fetch_exist_entries(dvs)
+        assert len(vnet_obj.nhgs)  == base_nhg  + 1, "Phase A: NHG not created"
+        assert len(vnet_obj.nhgms) == base_nhgm + 2, "Phase A: 2 NHG members expected"
+        assert _nhgm_rifs(nhg_oid_a) == {rif_a, rif_b}, \
+            "Phase A: NHG must contain distinct RIFs for %s and %s (duplicate-IP fix)" % (if_a, if_b)
+
+        # ---- Phase B: shrink to 1 ifname -> NHG removed, single NH on rif_a ----
+        create_vnet_local_routes(dvs, prefix, vnet_name, if_a, nh_ip)
+        nh_oid_b = _wait_route_nh("nh")
+        vnet_obj.fetch_exist_entries(dvs)
+        assert len(vnet_obj.nhgs)  == base_nhg, \
+            "Phase B: NHG should be removed; delta %d" % (len(vnet_obj.nhgs) - base_nhg)
+        assert len(vnet_obj.nhgms) == base_nhgm, \
+            "Phase B: NHG members should be removed; delta %d" % (len(vnet_obj.nhgms) - base_nhgm)
+        assert _nh_rif(nh_oid_b) == rif_a, \
+            "Phase B: surviving NH must point at %s's RIF (rif_a=%s, got %s)" % (if_a, rif_a, _nh_rif(nh_oid_b))
+
+        # ---- Phase C: grow back to 2 ifnames -> new 2-member NHG ----
+        create_vnet_local_routes(dvs, prefix, vnet_name,
+                                 '%s,%s' % (if_a, if_b),
+                                 '%s,%s' % (nh_ip, nh_ip))
+        nhg_oid_c = _wait_route_nh("nhg")
+        vnet_obj.fetch_exist_entries(dvs)
+        assert len(vnet_obj.nhgs)  == base_nhg  + 1, "Phase C: NHG not re-created"
+        assert len(vnet_obj.nhgms) == base_nhgm + 2, "Phase C: 2 NHG members expected"
+        assert _nhgm_rifs(nhg_oid_c) == {rif_a, rif_b}, \
+            "Phase C: reformed NHG must contain both RIFs"
+
+        # ---- Phase D: implicit link-down. Flap veth carrier of if_b; PortsOrch
+        # oper-status change -> NeighOrch.ifChangeInformNextHop ->
+        # RouteOrch.invalidnexthopinNextHopGroup must prune the if_b member
+        # NHG stays, drops to 1 member.
+        dvs.servers[srv_b].runcmd("ip link set down dev eth0")
+        self.set_admin_status(if_b, "down")
+        _wait_nhgm_count(base_nhgm + 1)
+        nhg_oid_d = _wait_route_nh("nhg")
+        vnet_obj.fetch_exist_entries(dvs)
+        assert len(vnet_obj.nhgs)  == base_nhg + 1, \
+            "Phase D: NHG must still exist with 1 member"
+        assert _nhgm_rifs(nhg_oid_d) == {rif_a}, \
+            "Phase D: surviving NHG member must be rif_a (got %s)" % _nhgm_rifs(nhg_oid_d)
+
+        # ---- Phase E: bring if_b back up + re-learn neighbor -> NHG reforms ----
+        dvs.servers[srv_b].runcmd("ip link set up dev eth0")
+        self.set_admin_status(if_b, "up")
+        self.add_neighbor(if_b, nh_ip, mac_b)
+        _wait_nhgm_count(base_nhgm + 2)
+        nhg_oid_e = _wait_route_nh("nhg")
+        vnet_obj.fetch_exist_entries(dvs)
+        assert len(vnet_obj.nhgs)  == base_nhg  + 1, "Phase E: NHG should still exist"
+        assert _nhgm_rifs(nhg_oid_e) == {rif_a, rif_b}, \
+            "Phase E: NHG must again contain both RIFs"
+
+        # ---- Cleanup ----
+        delete_vnet_local_routes(dvs, prefix, vnet_name)
+        vnet_obj.check_del_vnet_local_routes(dvs, vnet_name, prefix)
+        vnet_obj.fetch_exist_entries(dvs)
+        assert len(vnet_obj.nhgs)  == base_nhg
+        assert len(vnet_obj.nhgms) == base_nhgm
+
+        self.remove_neighbor(if_a, nh_ip)
+        self.remove_neighbor(if_b, nh_ip)
+        self.set_admin_status(if_a, "down")
+        self.set_admin_status(if_b, "down")
+
+        delete_phy_interface(dvs, if_a, "10.77.0.4/30")
+        vnet_obj.check_del_router_interface(dvs, if_a)
+        delete_phy_interface(dvs, if_b, "10.77.0.8/30")
+        vnet_obj.check_del_router_interface(dvs, if_b)
+
+        delete_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_name)
+
+        delete_vxlan_tunnel(dvs, tunnel_name)
+        vnet_obj.check_del_vxlan_tunnel(dvs)
+
 
     '''
     Test 33 - Create vnet route tunnel with various metric values
@@ -3323,5 +3818,57 @@ class TestVnetOrch(object):
 
 # Add Dummy always-pass test at end as workaroud
 # for issue when Flaky fail on final test it invokes module tear-down before retrying
+
+    """
+    Parity proof: VNET local route with explicit nexthop="0.0.0.0" must be
+    classified as a subnet route (is_subnet=True), bound to the interface RIF,
+    just like the empty-nexthop case. Pins down the behavior of the
+    is_subnet check after the refactor from
+        nh.ips.contains("0.0.0.0")
+    to
+        std::any_of(nh.ips, [](auto& a){ return a.isZero(); })
+    For IPv4 the two predicates are functionally equivalent; this test locks
+    that equivalence in.
+    """
+    def test_vnet_local_route_subnet_zero_ipv4(self, dvs, testlog):
+        self.setup_db(dvs)
+
+        vnet_obj = self.get_vnet_obj()
+        tunnel_name = "tunnel_subnet_zero_v4"
+        vnet_name = "Vnet5097"
+        if_a = "Ethernet60"
+        prefix = "10.97.0.0/24"
+
+        vnet_obj.fetch_exist_entries(dvs)
+        create_vxlan_tunnel(dvs, tunnel_name, "10.10.10.97")
+        create_vnet_entry(dvs, vnet_name, tunnel_name, "5097", "")
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, "5097")
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, "10.10.10.97")
+
+        create_phy_interface(dvs, if_a, vnet_name, "10.97.0.1/24")
+        vnet_obj.check_router_interface(dvs, if_a, vnet_name)
+
+        vnet_obj.fetch_exist_entries(dvs)
+        # The actual parity check: explicit "0.0.0.0" nexthop on an IPv4
+        # subnet must take the is_subnet branch and create an ASIC route bound
+        # to the interface RIF (same outcome as nexthop="").
+        create_vnet_local_routes(dvs, prefix, vnet_name, if_a, nexthop="0.0.0.0")
+        vnet_obj.check_vnet_local_routes(dvs, vnet_name)
+
+        # Clean-up
+        delete_vnet_local_routes(dvs, prefix, vnet_name)
+        vnet_obj.check_del_vnet_local_routes(dvs, vnet_name, prefix)
+
+        delete_phy_interface(dvs, if_a, "10.97.0.1/24")
+        vnet_obj.check_del_router_interface(dvs, if_a)
+
+        delete_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_name)
+
+        delete_vxlan_tunnel(dvs, tunnel_name)
+        vnet_obj.check_del_vxlan_tunnel(dvs)
+
+
 def test_nonflaky_dummy():
     pass
