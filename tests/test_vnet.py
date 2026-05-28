@@ -3772,12 +3772,12 @@ class TestVnetOrch(object):
 
 
     """
-    IP2Me link-local trap route for VNET VRs (PR#3973-aligned, fe80::/10 only).
+    IP2Me link-local trap route for VNET VR
 
     Validates that VNETOrch installs the fe80::/10 IP2Me trap route into
     every new VNET virtual router so unnumbered BGP / IPv6 link-local
     traffic in the VNET VRF is punted to CPU instead of being dropped at
-    the chip. Mirrors what RouteOrch installs in the default VR.
+    the chip. Also tests that the fe80 route is deleted upon VNET deletion
     """
     def test_vnet_ip2me_link_local(self, dvs, testlog):
         self.setup_db(dvs)
