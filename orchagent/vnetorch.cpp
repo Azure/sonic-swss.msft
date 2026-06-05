@@ -1407,11 +1407,9 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
                 }
             }
 
-            is_custom_monitor_pinned_state_updated = isPinnedStateUpdated(vnet, ipPrefix, monitor_addr_to_pinned_state);
-
             if (!selectNextHopGroup(vnet, nexthops, nexthops_secondary, monitoring,
                                     rx_monitor_timer, tx_monitor_timer, ipPrefix,
-                                    vrf_obj, active_nhg, monitors, monitor_addr_to_pinned_state))
+                                    vrf_obj, active_nhg, monitors))
             {
                 if (collision)
                 {
@@ -3652,7 +3650,7 @@ bool VNetRouteOrch::handleTunnel(const Request& request)
         return doRouteTask<VNetVrfObject>(vnet_name, ip_pfx,
             (has_priority_ep) ? nhg_primary : nhg, op, profile,
             monitoring, rx_monitor_timer, tx_monitor_timer,
-            nhg_secondary, adv_prefix, monitors, monitor_addr_to_pinned_state,
+            nhg_secondary, adv_prefix, monitors,
             consistent_hashing_buckets);
     }
 
