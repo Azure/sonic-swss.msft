@@ -112,9 +112,7 @@ public:
     bool validNextHopInNextHopGroup(const NextHopKey&);
     bool invalidNextHopInNextHopGroup(const NextHopKey&);
     bool setFgNhg(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const NextHopGroupKey &nextHops, sai_object_id_t &next_hop_id, bool &isNextHopIdChanged);
-    bool setFgNhgTunnel(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, map<NextHopKey, sai_object_id_t>& nhopgroup_members_set, NextHopGroupKey& nextHops, uint16_t consistent_hashing_buckets, sai_object_id_t &next_hop_id, bool &isNextHopIdChanged);
     bool removeFgNhg(sai_object_id_t vrf_id, const IpPrefix &ipPrefix);
-    bool removeFgNhgTunnel(sai_object_id_t vrf_id, const IpPrefix &ipPrefix);
 
     // warm reboot support
     bool bake() override;
@@ -144,32 +142,28 @@ private:
 
     bool setNewNhgMembers(FGNextHopGroupEntry &syncd_fg_route_entry, FgNhgEntry *fgNhgEntry,
                     std::vector<BankMemberChanges> &bank_member_changes,
-                    std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set, const string &key);
-    bool sprayBankNhgMembers(FGNextHopGroupEntry &syncd_fg_route_entry, const string &key,
+                    std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set, const IpPrefix&);
+    bool sprayBankNhgMembers(FGNextHopGroupEntry &syncd_fg_route_entry, const IpPrefix &ipPrefix,
                     BankIndexRange hash_idx_range, FgNhgEntry *fgNhgEntry,
                     uint32_t bank, BankMemberChanges &bank_member_change,
                     std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set);
 
     bool computeAndSetHashBucketChanges(FGNextHopGroupEntry *syncd_fg_route_entry,
                     FgNhgEntry *fgNhgEntry, std::vector<BankMemberChanges> &bank_member_changes,
-                    std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set, const string &key, const IpPrefix&);
+                    std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set, const IpPrefix&);
     bool setActiveBankHashBucketChanges(FGNextHopGroupEntry *syncd_fg_route_entry, FgNhgEntry *fgNhgEntry,
                     uint32_t syncd_bank, BankMemberChanges bank_member_changes,
-                    std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set, const string &key);
+                    std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set, const IpPrefix&);
     bool setInactiveBankHashBucketChanges(FGNextHopGroupEntry *syncd_fg_route_entry, FgNhgEntry *fgNhgEntry,
                     uint32_t bank,std::vector<BankMemberChanges> &bank_member_changes,
-                    std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set, const string &key, const IpPrefix&);
+                    std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set, const IpPrefix&);
     bool setInactiveBankToNextAvailableActiveBank(FGNextHopGroupEntry *syncd_fg_route_entry, FgNhgEntry *fgNhgEntry,
                     uint32_t bank, std::vector<BankMemberChanges> bank_member_changes,
-                    std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set, const string &key, const IpPrefix&);
+                    std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set, const IpPrefix&);
     void calculateBankHashBucketStartIndices(FgNhgEntry *fgNhgEntry);
-    bool getMaxEcmpMemberCount(uint32_t &maxEcmpMembers);
-    bool getEffectiveFgNhgMemberCapacity(uint32_t configuredBucketSize, uint32_t &memberCapacity);
-    bool validateFgNhgMemberCount(size_t memberCount, uint32_t configuredBucketSize, const string &logKey);
-    string getWarmRebootStateDbKey(const string &vnet, const IpPrefix &ipPrefix);
-    void setStateDbRouteEntry(const string &key, uint32_t index, NextHopKey nextHop);
+    void setStateDbRouteEntry(const IpPrefix&, uint32_t index, NextHopKey nextHop);
     bool writeHashBucketChange(FGNextHopGroupEntry *syncd_fg_route_entry, uint32_t index, sai_object_id_t nh_oid,
-                     const string &key, NextHopKey nextHop);
+                    const IpPrefix &ipPrefix, NextHopKey nextHop);
     bool modifyRoutesNextHopId(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, sai_object_id_t next_hop_id);
     bool createFineGrainedNextHopGroup(FGNextHopGroupEntry &syncd_fg_route_entry, FgNhgEntry *fgNhgEntry,
                     const NextHopGroupKey &nextHops);
@@ -177,7 +171,6 @@ private:
     vector<FieldValueTuple> generateRouteTableFromNhgKey(NextHopGroupKey nhg);
     void cleanupIpInLinkToIpMap(const string &link, const IpAddress &ip, FgNhgEntry &fgNhg_entry);
 
-    bool getVnetNameByVrfId(sai_object_id_t vrf_id, std::string& vnet_name);
     bool doTaskFgNhg(const KeyOpFieldsValuesTuple&);
     bool doTaskFgNhgPrefix(const KeyOpFieldsValuesTuple&);
     bool doTaskFgNhgMember(const KeyOpFieldsValuesTuple&);
