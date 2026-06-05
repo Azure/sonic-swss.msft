@@ -1378,7 +1378,6 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
         bool custom_monitor_ep_updated = false;
         std::map<NextHopKey, swss::IpAddress> origin_primary_monitors;
         std::map<NextHopKey, swss::IpAddress> origin_secondary_monitors;
-        bool is_custom_monitor_pinned_state_updated = false;
 
         if (is_fg_route)
         {
@@ -1679,10 +1678,6 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
                         vrf_obj->removeProfile(ipPrefix);
                     }
                 }
-                else if (is_custom_monitor_pinned_state_updated)
-                {
-                    route_updated = true;
-                }
             }
         }
 
@@ -1702,7 +1697,7 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
             tunnel_route_entry.secondary = nexthops_secondary;
             syncd_tunnel_routes_[vnet][ipPrefix] = tunnel_route_entry;
 
-            if (!is_fg_route && (priority_route_updated || custom_monitor_ep_updated || is_custom_monitor_pinned_state_updated))
+            if (!is_fg_route && (priority_route_updated || custom_monitor_ep_updated))
             {
                 MonitorUpdate update;
                 update.monitoring_type = monitoring;
