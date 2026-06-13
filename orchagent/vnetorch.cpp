@@ -1306,7 +1306,6 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
                                                NextHopGroupKey& nexthops_secondary,
                                                const IpPrefix& adv_prefix,
                                                const map<NextHopKey, IpAddress>& monitors,
-                                               const map<IpAddress, pinned_state_t>& monitor_addr_to_pinned_state,
                                                const uint16_t consistent_hashing_buckets)
 {
     SWSS_LOG_ENTER();
@@ -1376,10 +1375,8 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
         bool isNextHopIdChanged = false;
         NextHopGroupKey active_nhg("", true);
 
-        bool custom_monitor_ep_updated = false;
         std::map<NextHopKey, swss::IpAddress> origin_primary_monitors;
         std::map<NextHopKey, swss::IpAddress> origin_secondary_monitors;
-        bool is_custom_monitor_pinned_state_updated = false;
 
         if (is_fg_route)
         {
@@ -1397,22 +1394,10 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
         }
         else
         {
-            // Regular ECMP path with monitoring/priority support
-            custom_monitor_ep_updated = isCustomMonitorEndpointUpdated(vnet, ipPrefix, monitors);
-            if (custom_monitor_ep_updated)
-            {
-                if (it_route != syncd_tunnel_routes_[vnet].end())
-                {
-                    getCustomMonitors(vnet, ipPrefix, it_route->second.primary, origin_primary_monitors);
-                    getCustomMonitors(vnet, ipPrefix, it_route->second.secondary, origin_secondary_monitors);
-                }
-            }
-
-            is_custom_monitor_pinned_state_updated = isPinnedStateUpdated(vnet, ipPrefix, monitor_addr_to_pinned_state);
 
             if (!selectNextHopGroup(vnet, nexthops, nexthops_secondary, monitoring,
                                     rx_monitor_timer, tx_monitor_timer, ipPrefix,
-                                    vrf_obj, active_nhg, monitors, monitor_addr_to_pinned_state))
+                                    vrf_obj, active_nhg, monitors))
             {
                 if (collision)
                 {
@@ -1620,14 +1605,7 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
             }
             else if (!is_fg_route && !is_type_transition)
             {
-                // Regular → Regular update (existing logic)
-                if (custom_monitor_ep_updated)
-                {
-                    route_updated = true;
-                    delEndpointMonitor(vnet, origin_primary_monitors, ipPrefix);
-                    delEndpointMonitor(vnet, origin_secondary_monitors, ipPrefix);
-                }
-                else if ((monitoring == "" && it_route->second.nhg_key != nexthops) ||
+                if ((monitoring == "" && it_route->second.nhg_key != nexthops) ||
                     ((monitoring == VNET_MONITORING_TYPE_CUSTOM || monitoring == VNET_MONITORING_TYPE_CUSTOM_BFD) &&
                      (it_route->second.primary != nexthops || it_route->second.secondary != nexthops_secondary)))
                 {
@@ -1682,10 +1660,6 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
                         vrf_obj->removeProfile(ipPrefix);
                     }
                 }
-                else if (is_custom_monitor_pinned_state_updated)
-                {
-                    route_updated = true;
-                }
             }
         }
 
@@ -1705,7 +1679,7 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
             tunnel_route_entry.secondary = nexthops_secondary;
             syncd_tunnel_routes_[vnet][ipPrefix] = tunnel_route_entry;
 
-            if (!is_fg_route && (priority_route_updated || custom_monitor_ep_updated || is_custom_monitor_pinned_state_updated))
+            if (!is_fg_route && (priority_route_updated))
             {
                 MonitorUpdate update;
                 update.monitoring_type = monitoring;
@@ -3653,7 +3627,7 @@ bool VNetRouteOrch::handleTunnel(const Request& request)
         return doRouteTask<VNetVrfObject>(vnet_name, ip_pfx,
             (has_priority_ep) ? nhg_primary : nhg, op, profile,
             monitoring, rx_monitor_timer, tx_monitor_timer,
-            nhg_secondary, adv_prefix, monitors, monitor_addr_to_pinned_state,
+            nhg_secondary, adv_prefix, monitors,
             consistent_hashing_buckets);
     }
 
