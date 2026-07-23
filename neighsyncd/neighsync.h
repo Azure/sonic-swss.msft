@@ -40,6 +40,7 @@ private:
     ProducerStateTable m_neighTable;
     AppRestartAssist  *m_AppRestartAssist;
     Table m_cfgVlanInterfaceTable, m_cfgLagInterfaceTable, m_cfgInterfaceTable;
+    bool m_isDualToR = false;
 
     bool isLinkLocalEnabled(const std::string &port);
 };
