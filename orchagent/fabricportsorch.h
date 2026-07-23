@@ -9,6 +9,9 @@
 #include "producertable.h"
 #include "flex_counter_manager.h"
 
+using Clock = std::chrono::system_clock;
+using TimePoint = std::chrono::time_point<Clock>;
+
 #define STATE_FABRIC_CAPACITY_TABLE_NAME "FABRIC_CAPACITY_TABLE"
 #define STATE_PORT_CAPACITY_TABLE_NAME "PORT_CAPACITY_TABLE"
 
@@ -63,6 +66,8 @@ private:
     int m_defaultConfigIsolated = 0;
     int m_defaultIsolated = 0;
     int m_defaultAutoIsolated = 0;
+    std::unordered_map<std::string, std::queue<TimePoint>> linkQueues;
+    std::unordered_map<std::string, std::queue<TimePoint>> dnLkQueues;
 
     int getFabricPortList();
     void generatePortStats();
@@ -79,11 +84,23 @@ private:
         const string& field,
         uint64_t value);
     void isolateFabricLink(int lane, bool isolate);
+    string computeFabricIsolateReason(int isolated,
+        int cfgIsolated, int autoIsolated, int permIsolate,
+        uint64_t consecutivePollsWithErrors,
+        uint64_t consecutivePollsWithFecErrs, uint64_t isolationPollsCfg,
+        uint64_t fecIsolatedPolls);
 
     void doTask() override;
     void doTask(Consumer &consumer);
     void doFabricPortTask(Consumer &consumer);
     void doTask(swss::SelectableTimer &timer);
+
+    bool addErrorTime(
+          const std::string& link,
+          TimePoint now);
+    bool checkDownCnt(
+          const std::string& link,
+          TimePoint now);
 };
 
 #endif /* SWSS_FABRICPORTSORCH_H */
