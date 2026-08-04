@@ -9,9 +9,9 @@ CXXFLAGS = -g -O0
 
 CFLAGS_SAI = -I /usr/include/sai
 
-TESTS = tests tests_intfmgrd tests_teammgrd tests_portsyncd tests_fpmsyncd tests_response_publisher tests_teamsyncd
+TESTS = tests tests_intfmgrd tests_teammgrd tests_portsyncd tests_fpmsyncd tests_response_publisher tests_teamsyncd tests_neighsyncd
 
-noinst_PROGRAMS = tests tests_intfmgrd tests_teammgrd tests_portsyncd tests_fpmsyncd tests_response_publisher tests_teamsyncd
+noinst_PROGRAMS = tests tests_intfmgrd tests_teammgrd tests_portsyncd tests_fpmsyncd tests_response_publisher tests_teamsyncd tests_neighsyncd
 
 LDADD_SAI = -lsaimeta -lsaimetadata -lsaivs -lsairedis
 
@@ -304,6 +304,24 @@ tests_fpmsyncd_CFLAGS = $(DBGFLAGS) $(AM_CFLAGS) $(CFLAGS_COMMON) $(CFLAGS_GTEST
 tests_fpmsyncd_CPPFLAGS = $(DBGFLAGS) $(AM_CFLAGS) $(CFLAGS_COMMON) $(CFLAGS_GTEST) $(CFLAGS_SAI) $(tests_fpmsyncd_INCLUDES)
 tests_fpmsyncd_LDADD = $(LDADD_GTEST) $(LDADD_SAI) -lnl-genl-3 -lhiredis -lhiredis \
         -lswsscommon -lswsscommon -lgtest -lgtest_main -lzmq -lnl-3 -lnl-route-3 -lpthread -lgmock -lgmock_main
+
+## neighsyncd unit tests
+
+tests_neighsyncd_SOURCES = neighsyncd/neighsync_ut.cpp \
+                           mock_dbconnector.cpp \
+                           mock_table.cpp \
+                           mock_hiredis.cpp \
+                           mock_redisreply.cpp \
+                           $(top_srcdir)/neighsyncd/neighsync.cpp \
+                           $(top_srcdir)/lib/subintf.cpp \
+                           $(top_srcdir)/warmrestart/warmRestartHelper.cpp \
+                           $(top_srcdir)/warmrestart/warmRestartAssist.cpp
+
+tests_neighsyncd_INCLUDES = -I$(top_srcdir)/neighsyncd -I$(top_srcdir)/lib -I$(top_srcdir)/warmrestart
+tests_neighsyncd_CFLAGS = $(DBGFLAGS) $(AM_CFLAGS) $(CFLAGS_COMMON) $(CFLAGS_GTEST)
+tests_neighsyncd_CPPFLAGS = $(DBGFLAGS) $(AM_CFLAGS) $(CFLAGS_COMMON) $(CFLAGS_GTEST) $(tests_neighsyncd_INCLUDES)
+tests_neighsyncd_LDADD = $(LDADD_GTEST) -lnl-genl-3 -lhiredis -lhiredis \
+        -lswsscommon -lswsscommon -lgtest -lgtest_main -lzmq -lnl-3 -lnl-route-3 -lpthread -lgmock -lgmock_main -lboost_program_options
 
 ## response publisher unit tests
 
