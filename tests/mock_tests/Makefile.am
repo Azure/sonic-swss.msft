@@ -315,6 +315,8 @@ tests_fpmsyncd_SOURCES = fpmsyncd/test_fpmlink.cpp \
                          fpmsyncd/receive_srv6_mysids_ut.cpp \
                          fpmsyncd/ut_helpers_fpmsyncd.cpp \
                          fpmsyncd/fpmsyncd_evpn_mh_ut.cpp \
+                         fpmsyncd/macsync_ut.cpp \
+                         fdbsyncd/fake_subscriberstatetable.cpp \
                          fake_netlink.cpp \
                          fake_warmstarthelper.cpp \
                          fake_producerstatetable.cpp \
@@ -324,7 +326,8 @@ tests_fpmsyncd_SOURCES = fpmsyncd/test_fpmlink.cpp \
                          $(top_srcdir)/lib/orch_zmq_config.cpp \
                          $(top_srcdir)/warmrestart/ \
                          $(top_srcdir)/fpmsyncd/fpmlink.cpp \
-                         $(top_srcdir)/fpmsyncd/routesync.cpp
+                         $(top_srcdir)/fpmsyncd/routesync.cpp \
+                         $(top_srcdir)/fpmsyncd/macsync.cpp
 
 tests_fpmsyncd_INCLUDES = $(tests_INCLUDES) -I$(top_srcdir)/tests_fpmsyncd -I$(top_srcdir)/lib -I$(top_srcdir)/warmrestart -I$(top_srcdir)/fpmsyncd
 tests_fpmsyncd_CXXFLAGS = -Wl,-wrap,rtnl_link_i2name
@@ -344,6 +347,7 @@ tests_fdbsyncd_SOURCES = fdbsyncd/fdbsyncd_ut.cpp \
                          mock_table.cpp \
                          mock_hiredis.cpp \
                          mock_redisreply.cpp \
+                         common/mock_shell_command.cpp \
                          $(top_srcdir)/fdbsyncd/fdbsync.cpp
 
 tests_fdbsyncd_INCLUDES = $(tests_INCLUDES) -I$(top_srcdir)/tests_fdbsyncd -I$(top_srcdir)/lib -I$(top_srcdir)/warmrestart
