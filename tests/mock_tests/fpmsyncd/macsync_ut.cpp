@@ -727,6 +727,55 @@ TEST_F(MacSyncTest, MacOnNonEsPortWithoutVtepIsSkipped)
 }
 
 /*
+ * zebra sizes NDA_DST from the address family it guessed rather than from what
+ * it actually holds, so a MAC with no VTEP still arrives carrying a 16 byte
+ * all-zero destination. Treating that as a real address published `::` as the
+ * remote VTEP and hid the Ethernet Segment the MAC really sits on.
+ */
+TEST_F(MacSyncTest, UnspecifiedVtepIsNotAnAddress)
+{
+    Table cfgEs(m_cfgDb.get(), "EVPN_ETHERNET_SEGMENT");
+    cfgEs.set("lo", std::vector<FieldValueTuple>{{"esi", "AUTO"}});
+
+    struct in6_addr unspecified;
+    memset(&unspecified, 0, sizeof(unspecified));
+
+    MacMsg req;
+    buildMacMsg(req, RTM_NEWNEIGH, NUD_REACHABLE | NUD_NOARP);
+    req.ndm.ndm_ifindex = (int)if_nametoindex("lo");
+    addVlan(req, TEST_VLAN);
+    addSrcVni(req, TEST_VNI);
+    addAttr(req, NDA_DST, &unspecified, sizeof(unspecified));
+    feed(req);
+
+    std::vector<FieldValueTuple> values;
+    ASSERT_TRUE(getEntry(TEST_KEY, values));
+    EXPECT_EQ(fieldValue(values, "ifname"), "lo");
+    EXPECT_EQ(fieldValue(values, "remote_vtep"), "");
+
+    cfgEs.del("lo");
+}
+
+/* Same encoding on a port that is not an Ethernet Segment: there is nothing to
+ * program the MAC against, so it must be dropped rather than published. */
+TEST_F(MacSyncTest, UnspecifiedVtepOnNonEsPortIsSkipped)
+{
+    struct in6_addr unspecified;
+    memset(&unspecified, 0, sizeof(unspecified));
+
+    MacMsg req;
+    buildMacMsg(req, RTM_NEWNEIGH, NUD_REACHABLE);
+    req.ndm.ndm_ifindex = (int)if_nametoindex("lo");
+    addVlan(req, TEST_VLAN);
+    addSrcVni(req, TEST_VNI);
+    addAttr(req, NDA_DST, &unspecified, sizeof(unspecified));
+    feed(req);
+
+    std::vector<FieldValueTuple> values;
+    EXPECT_FALSE(getEntry(TEST_KEY, values));
+}
+
+/*
  * A MAC behind an Ethernet Segment reaches several VTEPs at once, so zebra
  * resolves it to an L2 nexthop group and sends NDA_NH_ID with no NDA_DST. It
  * has to be programmed against that group rather than discarded as though it

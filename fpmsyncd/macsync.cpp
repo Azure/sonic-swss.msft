@@ -782,9 +782,20 @@ void MacSync::onMacMsg(struct nlmsghdr *h, int len)
 
     if (nexthopGroup.empty())
     {
-        if (tb[NDA_DST])
+        size_t dstLen = tb[NDA_DST] ? RTA_PAYLOAD(tb[NDA_DST]) : 0;
+        bool haveDst = false;
+
+        /* zebra emits NDA_DST even when there is no VTEP, sized from the address
+         * family it guessed rather than from what it holds, so an unusable or
+         * all-zero destination means "no VTEP" and not 0.0.0.0. */
+        if (dstLen == sizeof(struct in_addr) || dstLen == sizeof(struct in6_addr))
         {
-            size_t dstLen = RTA_PAYLOAD(tb[NDA_DST]);
+            const uint8_t *dst = (const uint8_t *)RTA_DATA(tb[NDA_DST]);
+            haveDst = std::any_of(dst, dst + dstLen, [](uint8_t b) { return b != 0; });
+        }
+
+        if (haveDst)
+        {
             int family = (dstLen == sizeof(struct in6_addr)) ? AF_INET6 : AF_INET;
 
             if (!inet_ntop(family, RTA_DATA(tb[NDA_DST]), vtep, sizeof(vtep)))
