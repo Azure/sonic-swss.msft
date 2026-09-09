@@ -9,9 +9,9 @@ CXXFLAGS = -g -O0
 
 CFLAGS_SAI = -I /usr/include/sai
 
-TESTS = tests tests_vnetmgrd tests_intfmgrd tests_teammgrd tests_portsyncd tests_fpmsyncd tests_response_publisher tests_teamsyncd tests_neighsyncd
+TESTS = tests tests_vxlanmgrd tests_vnetmgrd tests_intfmgrd tests_teammgrd tests_portsyncd tests_fpmsyncd tests_response_publisher tests_teamsyncd tests_neighsyncd
 
-noinst_PROGRAMS = tests tests_vnetmgrd tests_intfmgrd tests_teammgrd tests_portsyncd tests_fpmsyncd tests_response_publisher tests_teamsyncd tests_neighsyncd
+noinst_PROGRAMS = tests tests_vxlanmgrd tests_vnetmgrd tests_intfmgrd tests_teammgrd tests_portsyncd tests_fpmsyncd tests_response_publisher tests_teamsyncd tests_neighsyncd
 
 LDADD_SAI = -lsaimeta -lsaimetadata -lsaivs -lsairedis
 
@@ -369,4 +369,20 @@ tests_vnetmgrd_INCLUDES = $(tests_INCLUDES) -I$(top_srcdir)/cfgmgr -I$(top_srcdi
 tests_vnetmgrd_CFLAGS = $(DBGFLAGS) $(AM_CFLAGS) $(CFLAGS_COMMON) $(CFLAGS_GTEST) $(CFLAGS_SAI)
 tests_vnetmgrd_CPPFLAGS = $(DBGFLAGS) $(AM_CFLAGS) $(CFLAGS_COMMON) $(CFLAGS_GTEST) $(CFLAGS_SAI) $(tests_vnetmgrd_INCLUDES)
 tests_vnetmgrd_LDADD = $(LDADD_GTEST) $(LDADD_SAI) -lnl-genl-3 -lhiredis -lhiredis \
+        -lswsscommon -lswsscommon -lgtest -lgtest_main -lzmq -lnl-3 -lnl-route-3 -lpthread -lgmock -lgmock_main
+
+## vxlanmgrd unit tests
+
+tests_vxlanmgrd_SOURCES = vxlanmgrd/vxlanmgr_ut.cpp \
+                         $(top_srcdir)/cfgmgr/vxlanmgr.cpp \
+                         $(top_srcdir)/lib/recorder.cpp \
+                         $(top_srcdir)/orchagent/orch.cpp \
+                         $(top_srcdir)/orchagent/request_parser.cpp \
+                         fake_response_publisher.cpp \
+                         common/mock_shell_command.cpp
+
+tests_vxlanmgrd_INCLUDES = $(tests_INCLUDES) -I$(top_srcdir)/cfgmgr -I$(top_srcdir)/lib
+tests_vxlanmgrd_CFLAGS = $(DBGFLAGS) $(AM_CFLAGS) $(CFLAGS_COMMON) $(CFLAGS_GTEST) $(CFLAGS_SAI)
+tests_vxlanmgrd_CPPFLAGS = $(DBGFLAGS) $(AM_CFLAGS) $(CFLAGS_COMMON) $(CFLAGS_GTEST) $(CFLAGS_SAI) $(tests_vxlanmgrd_INCLUDES)
+tests_vxlanmgrd_LDADD = $(LDADD_GTEST) $(LDADD_SAI) -lnl-genl-3 -lhiredis -lhiredis \
         -lswsscommon -lswsscommon -lgtest -lgtest_main -lzmq -lnl-3 -lnl-route-3 -lpthread -lgmock -lgmock_main
