@@ -32,7 +32,7 @@ namespace neighsync_ut
 
             m_neighSync = std::make_shared<NeighSync>(
                 m_app_db_pipeline.get(), m_state_db.get(),
-                m_config_db.get(), m_app_db.get());
+                m_config_db.get());
         }
 
         void TearDown() override
