@@ -1031,7 +1031,8 @@ bool VNetRouteOrch::removeFgNextHopGroup(const string& vnet, const NextHopGroupK
     {
         for (auto& member : it_fg->second.active_members)
         {
-            vrf_obj->removeTunnelNextHop(member.first);
+            NextHopKey nhop = member.first;
+            vrf_obj->removeTunnelNextHop(nhop);
         }
     }
     else
