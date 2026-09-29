@@ -466,6 +466,7 @@ struct TunnelRouteContext
         DEL
     };
 
+    std::deque<sai_status_t> object_statuses;
     IpPrefix ip_prefix;
     string vnet;
     sai_object_id_t vr_id;
@@ -481,19 +482,21 @@ struct TunnelRouteContext
     bool was_fg = false;
     bool is_type_transition = false;
     NextHopGroupKey old_nhg_key;
-    size_t status_index;
     TunnelRouteContext(const string& vnet_name, sai_object_id_t vrf_id, const IpPrefix& pfx,
-                       bool set_op, SaiOp op, size_t idx)
+                       bool set_op, SaiOp op)
         : ip_prefix(pfx), vnet(vnet_name), vr_id(vrf_id), nhg("", true), primary("", true), secondary("", true),
-          is_set_op(set_op), sai_op(op), is_fg_route(false), status_index(idx) {}
+          is_set_op(set_op), sai_op(op), is_fg_route(false) {}
+
+    TunnelRouteContext(const TunnelRouteContext&) = delete;
+    TunnelRouteContext(TunnelRouteContext&&) = delete;
 };
 
 struct VNetRouteBulkContext {
     std::string key;
     std::string op;
     bool processable = false;
-    std::vector<RouteOrchContext> non_subnet_contexts;
-    std::vector<TunnelRouteContext> tunnel_contexts;
+    std::deque<RouteOrchContext> non_subnet_contexts;
+    std::deque<TunnelRouteContext> tunnel_contexts;
 };
 
 struct VNetTunnelRouteEntry
@@ -648,10 +651,7 @@ private:
     std::set<IpPrefix> subnet_decap_terms_created_;
     ProducerStateTable bfd_session_producer_;
     ProducerStateTable app_tunnel_decap_term_producer_;
-    std::deque<sai_status_t> object_statuses_;
-    std::vector<RouteOrchContext> routeorch_contexts_;
-    std::vector<TunnelRouteContext> tunnel_route_contexts_;
-    std::vector<VNetRouteBulkContext> toBulk_;
+    std::deque<VNetRouteBulkContext> toBulk_;
     EntityBulker<sai_route_api_t> tunnel_route_bulker_;
     unique_ptr<Table> monitor_session_producer_;
     shared_ptr<DBConnector> config_db_;

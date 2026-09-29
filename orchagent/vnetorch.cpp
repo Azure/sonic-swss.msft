@@ -1450,9 +1450,16 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
             }
         }
 
+        if (toBulk_.empty())
+        {
+            SWSS_LOG_ERROR("No VNet bulk context for tunnel route %s", ipPrefix.to_string().c_str());
+            return false;
+        }
+
         for (auto vr_id : vr_set)
         {
-            size_t ctx_before = tunnel_route_contexts_.size();
+            auto& tunnel_contexts = toBulk_.back().tunnel_contexts;
+            size_t ctx_before = tunnel_contexts.size();
 
             if (is_fg_route)
             {
@@ -1515,15 +1522,14 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
 
             // For paths that performed no SAI op, enqueue a no-op context so the
             // book-keeping in addTunnelRoutePost still runs for this route.
-            if (tunnel_route_contexts_.size() == ctx_before)
+            if (tunnel_contexts.size() == ctx_before)
             {
-                object_statuses_.emplace_back(SAI_STATUS_SUCCESS);
-                tunnel_route_contexts_.emplace_back(vnet, vr_id, ipPrefix, true,
-                                                    TunnelRouteContext::SaiOp::NONE,
-                                                    object_statuses_.size() - 1);
+                tunnel_contexts.emplace_back(vnet, vr_id, ipPrefix, true,
+                                             TunnelRouteContext::SaiOp::NONE);
+                tunnel_contexts.back().object_statuses.emplace_back(SAI_STATUS_SUCCESS);
             }
 
-            auto& tr_ctx = tunnel_route_contexts_.back();
+            auto& tr_ctx = tunnel_contexts.back();
             tr_ctx.nhg = active_nhg;
             tr_ctx.profile = profile;
             tr_ctx.monitoring = monitoring;
@@ -1553,21 +1559,27 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
             ? !syncd_fg_nexthop_groups_[vnet][ipPrefix].active_members.empty()
             : !syncd_nexthop_groups_[vnet][nhg].active_members.empty();
 
+        if (toBulk_.empty())
+        {
+            SWSS_LOG_ERROR("No VNet bulk context for tunnel route %s", ipPrefix.to_string().c_str());
+            return false;
+        }
+
         for (auto vr_id : vr_set)
         {
+            auto& tunnel_contexts = toBulk_.back().tunnel_contexts;
             if (nhg_has_active_members)
             {
                 delTunnelRouteBulk(vnet, vr_id, ipPrefix);
             }
             else
             {
-                object_statuses_.emplace_back(SAI_STATUS_SUCCESS);
-                tunnel_route_contexts_.emplace_back(vnet, vr_id, ipPrefix, false,
-                                                    TunnelRouteContext::SaiOp::NONE,
-                                                    object_statuses_.size() - 1);
+                tunnel_contexts.emplace_back(vnet, vr_id, ipPrefix, false,
+                                             TunnelRouteContext::SaiOp::NONE);
+                tunnel_contexts.back().object_statuses.emplace_back(SAI_STATUS_SUCCESS);
             }
 
-            auto& tr_ctx = tunnel_route_contexts_.back();
+            auto& tr_ctx = tunnel_contexts.back();
             tr_ctx.nhg = nhg;
             tr_ctx.primary = it_route->second.primary;
             tr_ctx.secondary = it_route->second.secondary;
@@ -1582,6 +1594,12 @@ bool VNetRouteOrch::addTunnelRouteBulk(const string& vnet, sai_object_id_t vr_id
 {
     SWSS_LOG_ENTER();
 
+    if (toBulk_.empty())
+    {
+        SWSS_LOG_ERROR("No VNet bulk context for tunnel route %s", ipPrefix.to_string().c_str());
+        return false;
+    }
+
     sai_route_entry_t route_entry;
     route_entry.vr_id = vr_id;
     route_entry.switch_id = gSwitchId;
@@ -1591,10 +1609,11 @@ bool VNetRouteOrch::addTunnelRouteBulk(const string& vnet, sai_object_id_t vr_id
     route_attr.id = SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID;
     route_attr.value.oid = nh_id;
 
-    object_statuses_.emplace_back();
-    tunnel_route_bulker_.create_entry(&object_statuses_.back(), &route_entry, 1, &route_attr);
-    tunnel_route_contexts_.emplace_back(vnet, vr_id, ipPrefix, true,
-                                        TunnelRouteContext::SaiOp::ADD, object_statuses_.size() - 1);
+    auto& tunnel_contexts = toBulk_.back().tunnel_contexts;
+    tunnel_contexts.emplace_back(vnet, vr_id, ipPrefix, true, TunnelRouteContext::SaiOp::ADD);
+    auto& tr_ctx = tunnel_contexts.back();
+    tr_ctx.object_statuses.emplace_back();
+    tunnel_route_bulker_.create_entry(&tr_ctx.object_statuses.back(), &route_entry, 1, &route_attr);
     return true;
 }
 
@@ -1603,15 +1622,22 @@ bool VNetRouteOrch::delTunnelRouteBulk(const string& vnet, sai_object_id_t vr_id
 {
     SWSS_LOG_ENTER();
 
+    if (toBulk_.empty())
+    {
+        SWSS_LOG_ERROR("No VNet bulk context for tunnel route %s", ipPrefix.to_string().c_str());
+        return false;
+    }
+
     sai_route_entry_t route_entry;
     route_entry.vr_id = vr_id;
     route_entry.switch_id = gSwitchId;
     copy(route_entry.destination, ipPrefix);
 
-    object_statuses_.emplace_back();
-    tunnel_route_bulker_.remove_entry(&object_statuses_.back(), &route_entry);
-    tunnel_route_contexts_.emplace_back(vnet, vr_id, ipPrefix, is_set_op,
-                                        TunnelRouteContext::SaiOp::DEL, object_statuses_.size() - 1);
+    auto& tunnel_contexts = toBulk_.back().tunnel_contexts;
+    tunnel_contexts.emplace_back(vnet, vr_id, ipPrefix, is_set_op, TunnelRouteContext::SaiOp::DEL);
+    auto& tr_ctx = tunnel_contexts.back();
+    tr_ctx.object_statuses.emplace_back();
+    tunnel_route_bulker_.remove_entry(&tr_ctx.object_statuses.back(), &route_entry);
     return true;
 }
 
@@ -1619,6 +1645,12 @@ bool VNetRouteOrch::updateTunnelRouteBulk(const string& vnet, sai_object_id_t vr
                                           const IpPrefix& ipPrefix, sai_object_id_t nh_id)
 {
     SWSS_LOG_ENTER();
+
+    if (toBulk_.empty())
+    {
+        SWSS_LOG_ERROR("No VNet bulk context for tunnel route %s", ipPrefix.to_string().c_str());
+        return false;
+    }
 
     sai_route_entry_t route_entry;
     route_entry.vr_id = vr_id;
@@ -1629,10 +1661,11 @@ bool VNetRouteOrch::updateTunnelRouteBulk(const string& vnet, sai_object_id_t vr
     route_attr.id = SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID;
     route_attr.value.oid = nh_id;
 
-    object_statuses_.emplace_back();
-    tunnel_route_bulker_.set_entry_attribute(&object_statuses_.back(), &route_entry, &route_attr);
-    tunnel_route_contexts_.emplace_back(vnet, vr_id, ipPrefix, true,
-                                        TunnelRouteContext::SaiOp::UPDATE, object_statuses_.size() - 1);
+    auto& tunnel_contexts = toBulk_.back().tunnel_contexts;
+    tunnel_contexts.emplace_back(vnet, vr_id, ipPrefix, true, TunnelRouteContext::SaiOp::UPDATE);
+    auto& tr_ctx = tunnel_contexts.back();
+    tr_ctx.object_statuses.emplace_back();
+    tunnel_route_bulker_.set_entry_attribute(&tr_ctx.object_statuses.back(), &route_entry, &route_attr);
     return true;
 }
 
@@ -2025,40 +2058,50 @@ bool VNetRouteOrch::setAndDeleteRoutesWithRouteOrch(const sai_object_id_t vr_id,
         return false;
     }
 
-    // Set up route bulk context
+    if (toBulk_.empty())
+    {
+        SWSS_LOG_ERROR("No VNet bulk context for prefix %s", ipPrefix.to_string().c_str());
+        return false;
+    }
+
     string key = vnet_name + ":" + ipPrefix.to_string();
-    RouteBulkContext ctx(key, (op == SET_COMMAND));
-    ctx.vrf_id = vr_id;
-    ctx.ip_prefix = ipPrefix;
-    ctx.nhg = nhg;
+    auto& bulk_ctx = toBulk_.back();
+    bulk_ctx.non_subnet_contexts.emplace_back(key, op == SET_COMMAND, nhg);
+    auto& ro_ctx = bulk_ctx.non_subnet_contexts.back();
+    ro_ctx.ctx.vrf_id = vr_id;
+    ro_ctx.ctx.ip_prefix = ipPrefix;
+    ro_ctx.ctx.nhg = nhg;
 
     if (op == SET_COMMAND)
     {
-        // Queue the route add into the route bulker; flushed later in doTask().
-        if (gRouteOrch->addRoute(ctx, nhg))
+        if (gRouteOrch->addRoute(ro_ctx.ctx, nhg))
         {
+            bulk_ctx.non_subnet_contexts.pop_back();
             return true;
         }
-        if (ctx.object_statuses.empty())
+        if (ro_ctx.ctx.object_statuses.empty())
         {
+            bulk_ctx.non_subnet_contexts.pop_back();
             return false;
         }
-        routeorch_contexts_.emplace_back(key, true, nhg);
-        routeorch_contexts_.back().ctx = std::move(ctx);
     }
     else if (op == DEL_COMMAND)
     {
-        // Queue the route remove into the route bulker; flushed later in doTask().
-        if (gRouteOrch->removeRoute(ctx))
+        if (gRouteOrch->removeRoute(ro_ctx.ctx))
         {
+            bulk_ctx.non_subnet_contexts.pop_back();
             return true;
         }
-        if (ctx.object_statuses.empty())
+        if (ro_ctx.ctx.object_statuses.empty())
         {
+            bulk_ctx.non_subnet_contexts.pop_back();
             return true;
         }
-        routeorch_contexts_.emplace_back(key, false, nhg);
-        routeorch_contexts_.back().ctx = std::move(ctx);
+    }
+    else
+    {
+        bulk_ctx.non_subnet_contexts.pop_back();
+        return false;
     }
 
     return true;
@@ -3858,19 +3901,13 @@ void VNetRouteOrch::doTask(Consumer &consumer)
         {
             it = consumer.m_toSync.erase(it);
             toBulk_.pop_back();
-            routeorch_contexts_.clear();
-            tunnel_route_contexts_.clear();
             continue;
         }
 
         if (can_process)
         {
             bulk_ctx.processable = true;
-            bulk_ctx.non_subnet_contexts = std::move(routeorch_contexts_);
-            bulk_ctx.tunnel_contexts = std::move(tunnel_route_contexts_);
         }
-        routeorch_contexts_.clear();
-        tunnel_route_contexts_.clear();
         it++;
     }
 
@@ -3881,7 +3918,7 @@ void VNetRouteOrch::doTask(Consumer &consumer)
         return;
     }
 
-    gRouteOrch->gRouteBulker.flush();
+    gRouteOrch->flushRouteBulker();
     tunnel_route_bulker_.flush();
 
     auto& bulkNhgReducedRefCnt = gRouteOrch->getBulkNhgReducedRefCnt();
@@ -3938,8 +3975,11 @@ void VNetRouteOrch::doTask(Consumer &consumer)
         bool tunnel_ok = true;
         for (auto& tr_ctx : bulk_ctx.tunnel_contexts)
         {
-            sai_status_t status = (tr_ctx.status_index < object_statuses_.size())
-                                  ? object_statuses_[tr_ctx.status_index] : SAI_STATUS_FAILURE;
+            sai_status_t status = SAI_STATUS_FAILURE;
+            if (!tr_ctx.object_statuses.empty())
+            {
+                status = tr_ctx.object_statuses.front();
+            }
 
             if (status != SAI_STATUS_SUCCESS)
             {
@@ -4024,7 +4064,6 @@ void VNetRouteOrch::doTask(Consumer &consumer)
         }
     }
     bulkNhgReducedRefCnt.clear();
-    object_statuses_.clear();
 }
 
 VNetCfgRouteOrch::VNetCfgRouteOrch(DBConnector *db, DBConnector *appDb, vector<string> &tableNames)
