@@ -3573,6 +3573,101 @@ class TestVnetOrch(object):
         delete_vxlan_tunnel(dvs, tunnel_name)
         vnet_obj.check_del_vxlan_tunnel(dvs)
 
+    '''
+    Fine-grained prefixes on one VNet share tunnel next hops. Updating one
+    prefix to add endpoints must keep the other prefix's group and the shared
+    next hops; deleting the updated prefix must drop only the extra next hops.
+    '''
+    def test_vnet_fg_shared_nh_update(self, dvs, testlog):
+        self.setup_db(dvs)
+        vnet_obj = self.get_vnet_obj()
+        asic_db = dvs.get_asic_db()
+        state_db = dvs.get_state_db()
+
+        tunnel_name = 'tunnel_fg_share_upd'
+        vnet_name = 'VnetFgShareUpd'
+        prefix_a = "102.100.1.0/24"
+        prefix_b = "102.100.2.0/24"
+        bucket_size = 30
+        shared_eps = '138.0.0.1,138.0.0.2,138.0.0.3'
+        shared_macs = '00:12:34:56:78:bA,00:12:34:56:78:bB,00:12:34:56:78:bC'
+        updated_eps = '138.0.0.1,138.0.0.2,138.0.0.3,138.0.0.4,138.0.0.5'
+        updated_macs = '00:12:34:56:78:bA,00:12:34:56:78:bB,00:12:34:56:78:bC,00:12:34:56:78:bD,00:12:34:56:78:bE'
+
+        vnet_obj.fetch_exist_entries(dvs)
+        initial_nhop_count = len(asic_db.get_keys(vnet_obj.ASIC_NEXT_HOP))
+
+        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.12')
+        create_vnet_entry(dvs, vnet_name, tunnel_name, '100038', "")
+
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, '100038')
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '10.10.10.12')
+
+        vnet_obj.fetch_exist_entries(dvs)
+        vr_id = vnet_obj.vr_map[vnet_name]['ing']
+
+        create_vnet_routes(dvs, prefix_a, vnet_name, shared_eps, shared_macs,
+                           consistent_hashing_buckets=bucket_size)
+        create_vnet_routes(dvs, prefix_b, vnet_name, shared_eps, shared_macs,
+                           consistent_hashing_buckets=bucket_size)
+
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, bucket_size * 2)
+        nhgid_a = test_fgnhg.validate_asic_nhg_fine_grained_ecmp(asic_db, prefix_a, bucket_size, vr_id)
+        nhgid_b = test_fgnhg.validate_asic_nhg_fine_grained_ecmp(asic_db, prefix_b, bucket_size, vr_id)
+        assert nhgid_a != nhgid_b
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count + 3)
+
+        check_state_db_routes(dvs, vnet_name, prefix_a, ['138.0.0.1', '138.0.0.2', '138.0.0.3'])
+        check_state_db_routes(dvs, vnet_name, prefix_b, ['138.0.0.1', '138.0.0.2', '138.0.0.3'])
+
+        create_vnet_routes(dvs, prefix_a, vnet_name, updated_eps, updated_macs,
+                           consistent_hashing_buckets=bucket_size)
+        time.sleep(2)
+
+        nhgid_a_after = test_fgnhg.validate_asic_nhg_fine_grained_ecmp(asic_db, prefix_a, bucket_size, vr_id)
+        nhgid_b_after = test_fgnhg.validate_asic_nhg_fine_grained_ecmp(asic_db, prefix_b, bucket_size, vr_id)
+        assert nhgid_b_after == nhgid_b
+        assert nhgid_a_after == nhgid_a
+        check_state_db_routes(dvs, vnet_name, prefix_a,
+                              ['138.0.0.1', '138.0.0.2', '138.0.0.3', '138.0.0.4', '138.0.0.5'])
+        check_state_db_routes(dvs, vnet_name, prefix_b, ['138.0.0.1', '138.0.0.2', '138.0.0.3'])
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count + 5)
+
+        asic_rt_key_a = test_fgnhg.get_asic_route_key(asic_db, prefix_a, vr_id)
+        asic_rt_key_b = test_fgnhg.get_asic_route_key(asic_db, prefix_b, vr_id)
+
+        delete_vnet_routes(dvs, prefix_a, vnet_name)
+        time.sleep(2)
+
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, [prefix_a])
+        check_remove_state_db_routes(dvs, vnet_name, prefix_a)
+        asic_db.wait_for_deleted_entry(test_fgnhg.ASIC_ROUTE_TB, asic_rt_key_a)
+
+        check_state_db_routes(dvs, vnet_name, prefix_b, ['138.0.0.1', '138.0.0.2', '138.0.0.3'])
+        nhgid_b_final = test_fgnhg.validate_asic_nhg_fine_grained_ecmp(asic_db, prefix_b, bucket_size, vr_id)
+        assert nhgid_b_final == nhgid_b
+        assert asic_db.get_entry(test_fgnhg.ASIC_ROUTE_TB, asic_rt_key_b)
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count + 3)
+
+        delete_vnet_routes(dvs, prefix_b, vnet_name)
+        time.sleep(2)
+
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, [prefix_b])
+        check_remove_state_db_routes(dvs, vnet_name, prefix_b)
+        asic_db.wait_for_deleted_entry(test_fgnhg.ASIC_ROUTE_TB, asic_rt_key_b)
+
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, 0)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG, 0)
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count)
+        state_db.wait_for_n_keys("FG_ROUTE_TABLE", 0)
+
+        delete_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_name)
+
+        delete_vxlan_tunnel(dvs, tunnel_name)
+        vnet_obj.check_del_vxlan_tunnel(dvs)
+
     """
     IP2Me link-local trap route for VNET VR
 
@@ -4133,7 +4228,7 @@ class TestVnetOrch(object):
         # Bring monitors up
         for i, prefix in enumerate(routes):
             for j in range(1, 5):
-                update_monitor_session_state(dvs, f'9.{i}.1.{j}', prefix, 'up')
+                update_monitor_session_state(dvs, prefix, f'9.{i}.1.{j}', 'up')
         
         time.sleep(2)
         
@@ -4271,6 +4366,197 @@ class TestVnetOrch(object):
         delete_vxlan_tunnel(dvs, tunnel_name)
 
     '''
+    Test 43 - Bulk fine-grained routes share tunnel next hops
+    '''
+    def test_vnet_orch_43(self, dvs, testlog):
+        self.setup_db(dvs)
+
+        vnet_obj = self.get_vnet_obj()
+        asic_db = dvs.get_asic_db()
+
+        tunnel_name = 'tunnel_fg_bulk'
+        vnet_name = 'Vnet_fg_bulk'
+        bucket_size = 20
+        endpoints = '10.43.0.1,10.43.0.2,10.43.0.3'
+        macs = '00:12:34:56:78:9A,00:12:34:56:78:9B,00:12:34:56:78:9C'
+        route_prefixes = [f'100.43.{i}.0/24' for i in range(10)]
+
+        vnet_obj.fetch_exist_entries(dvs)
+        initial_nhop_count = len(asic_db.get_keys(vnet_obj.ASIC_NEXT_HOP))
+
+        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.10')
+        create_vnet_entry(dvs, vnet_name, tunnel_name, '4300', '')
+
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, '4300')
+
+        app_db = swsscommon.DBConnector(swsscommon.APPL_DB, dvs.redis_sock, 0)
+        app_route_tbl = swsscommon.ProducerStateTable(app_db, "VNET_ROUTE_TUNNEL_TABLE")
+        self._set_buffered(app_route_tbl, True)
+
+        for prefix in route_prefixes:
+            create_vnet_routes_appdb(app_route_tbl, prefix, vnet_name, endpoints,
+                                     mac=macs, consistent_hashing_buckets=bucket_size)
+
+        self._flush_buffered(app_route_tbl)
+        self._set_buffered(app_route_tbl, False)
+
+        time.sleep(2)
+
+        for prefix in route_prefixes:
+            check_state_db_routes(dvs, vnet_name, prefix, endpoints.split(','))
+
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count + 3)
+
+        for prefix in route_prefixes:
+            delete_vnet_routes_appdb(app_route_tbl, prefix, vnet_name)
+
+        self._flush_buffered(app_route_tbl)
+
+        time.sleep(2)
+
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, 0)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG, 0)
+
+        delete_vnet_entry(dvs, vnet_name)
+        delete_vxlan_tunnel(dvs, tunnel_name)
+
+    '''
+    Test 44 - Bulk ECMP tunnel NH dedup and NHG member cleanup
+    '''
+    def test_vnet_orch_44(self, dvs, testlog):
+        self.setup_db(dvs)
+
+        vnet_obj = self.get_vnet_obj()
+        asic_db = dvs.get_asic_db()
+
+        tunnel_name = 'tunnel_ecmp44'
+        vnet_name = 'Vnet_ecmp44'
+        num_routes = 30
+        endpoints = ['10.44.0.1', '10.44.0.2', '10.44.0.3']
+        route_prefixes = [f'100.44.{i}.0/24' for i in range(num_routes)]
+
+        vnet_obj.fetch_exist_entries(dvs)
+        initial_nhop_count = len(asic_db.get_keys(vnet_obj.ASIC_NEXT_HOP))
+        initial_nhgm_count = len(asic_db.get_keys(vnet_obj.ASIC_NEXT_HOP_GROUP_MEMBER))
+        nhgs_baseline = get_exist_entries(dvs, vnet_obj.ASIC_NEXT_HOP_GROUP)
+
+        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.10')
+        create_vnet_entry(dvs, vnet_name, tunnel_name, '4400', '')
+
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, '4400')
+
+        app_db = swsscommon.DBConnector(swsscommon.APPL_DB, dvs.redis_sock, 0)
+        app_route_tbl = swsscommon.ProducerStateTable(app_db, "VNET_ROUTE_TUNNEL_TABLE")
+        self._set_buffered(app_route_tbl, True)
+
+        for prefix in route_prefixes:
+            create_vnet_routes_appdb(app_route_tbl, prefix, vnet_name, ','.join(endpoints))
+
+        self._flush_buffered(app_route_tbl)
+        self._set_buffered(app_route_tbl, False)
+
+        time.sleep(2)
+
+        for prefix in route_prefixes:
+            check_state_db_routes(dvs, vnet_name, prefix, endpoints)
+
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count + len(endpoints))
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP_GROUP_MEMBER,
+                                initial_nhgm_count + len(endpoints))
+
+        nhgs_after_add = get_exist_entries(dvs, vnet_obj.ASIC_NEXT_HOP_GROUP)
+        nhgs_new = [nhg for nhg in nhgs_after_add if nhg not in nhgs_baseline]
+        assert len(nhgs_new) == 1, \
+            f"Expected one shared ECMP NHG, got {len(nhgs_new)}"
+
+        self._set_buffered(app_route_tbl, True)
+        for prefix in route_prefixes:
+            delete_vnet_routes_appdb(app_route_tbl, prefix, vnet_name)
+
+        self._flush_buffered(app_route_tbl)
+        self._set_buffered(app_route_tbl, False)
+
+        time.sleep(2)
+
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count)
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP_GROUP_MEMBER, initial_nhgm_count)
+
+        nhgs_final = get_exist_entries(dvs, vnet_obj.ASIC_NEXT_HOP_GROUP)
+        nhgs_final_filtered = [nhg for nhg in nhgs_final if nhg not in nhgs_baseline]
+        assert len(nhgs_final_filtered) == 0, \
+            f"NHG should be deleted after bulk route removal, got {len(nhgs_final_filtered)}"
+
+        delete_vnet_entry(dvs, vnet_name)
+        delete_vxlan_tunnel(dvs, tunnel_name)
+
+    '''
+    Test 45 - Shared tunnel NH dedup across VNets in one bulk batch
+    '''
+    def test_vnet_orch_45(self, dvs, testlog):
+        self.setup_db(dvs)
+
+        vnet_obj = self.get_vnet_obj()
+        asic_db = dvs.get_asic_db()
+
+        tunnel_name = 'tunnel_sh45'
+        vnet_a = 'Vnet_sh45a'
+        vnet_b = 'Vnet_sh45b'
+        num_routes = 10
+        endpoints = ['10.45.0.1', '10.45.0.2', '10.45.0.3']
+        route_prefixes = [f'100.45.{i}.0/24' for i in range(num_routes)]
+
+        vnet_obj.fetch_exist_entries(dvs)
+        initial_nhop_count = len(asic_db.get_keys(vnet_obj.ASIC_NEXT_HOP))
+
+        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.10')
+        create_vnet_entry(dvs, vnet_a, tunnel_name, '4501', '')
+        vnet_obj.check_vnet_entry(dvs, vnet_a)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_a, '4501')
+
+        create_vnet_entry(dvs, vnet_b, tunnel_name, '4502', '')
+        vnet_obj.check_vnet_entry(dvs, vnet_b)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_b, '4502')
+
+        app_db = swsscommon.DBConnector(swsscommon.APPL_DB, dvs.redis_sock, 0)
+        app_route_tbl = swsscommon.ProducerStateTable(app_db, "VNET_ROUTE_TUNNEL_TABLE")
+        self._set_buffered(app_route_tbl, True)
+
+        # Single flush: routes for both VNets land in one doTask batch.
+        for prefix in route_prefixes:
+            create_vnet_routes_appdb(app_route_tbl, prefix, vnet_a, ','.join(endpoints))
+            create_vnet_routes_appdb(app_route_tbl, prefix, vnet_b, ','.join(endpoints))
+
+        self._flush_buffered(app_route_tbl)
+        self._set_buffered(app_route_tbl, False)
+
+        time.sleep(2)
+
+        for prefix in route_prefixes:
+            check_state_db_routes(dvs, vnet_a, prefix, endpoints)
+            check_state_db_routes(dvs, vnet_b, prefix, endpoints)
+
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count + len(endpoints))
+
+        self._set_buffered(app_route_tbl, True)
+        for prefix in route_prefixes:
+            delete_vnet_routes_appdb(app_route_tbl, prefix, vnet_a)
+            delete_vnet_routes_appdb(app_route_tbl, prefix, vnet_b)
+
+        self._flush_buffered(app_route_tbl)
+        self._set_buffered(app_route_tbl, False)
+
+        time.sleep(2)
+
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count)
+
+        delete_vnet_entry(dvs, vnet_a)
+        delete_vnet_entry(dvs, vnet_b)
+        delete_vxlan_tunnel(dvs, tunnel_name)
+
+    '''
     Test 42 - SET-to-inactive keeps STATE_DB route
     '''
     def test_vnet_orch_42(self, dvs, testlog):
@@ -4328,7 +4614,253 @@ class TestVnetOrch(object):
         delete_vnet_entry(dvs, vnet_name)
         delete_vxlan_tunnel(dvs, tunnel_name)
 
+    def _tunnel_encap_nh_count(self, dvs):
+        asic_db = swsscommon.DBConnector(swsscommon.ASIC_DB, dvs.redis_sock, 0)
+        tbl = swsscommon.Table(asic_db, "ASIC_STATE:SAI_OBJECT_TYPE_NEXT_HOP")
+        count = 0
+        for key in tbl.getKeys():
+            status, fvs = tbl.get(key)
+            if not status:
+                continue
+            attrs = dict(fvs)
+            if attrs.get("SAI_NEXT_HOP_ATTR_TYPE") == "SAI_NEXT_HOP_TYPE_TUNNEL_ENCAP":
+                count += 1
+        return count
+
+    '''
+    Remove VNet A (tunnel route, then VNET) while VNet B stays up, program a
+    new size-1 tunnel route on B, then recreate A. Covers leftover empty
+    syncd_nexthop_groups_ keys plus deferred size-1 NH resolve after a deleted VNet.
+    '''
+    def test_vnet_delete_then_other_vnet_route(self, dvs, testlog):
+        vnet_obj = self.get_vnet_obj()
+
+        tunnel_name = 'tunnel_nh_del'
+        vnet_a = 'VnetNhDelA'
+        vnet_b = 'VnetNhDelB'
+
+        vnet_obj.fetch_exist_entries(dvs)
+
+        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.1')
+        create_vnet_entry(dvs, vnet_a, tunnel_name, '11001', "")
+        vnet_obj.check_vnet_entry(dvs, vnet_a)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_a, '11001')
+
+        create_vnet_entry(dvs, vnet_b, tunnel_name, '11002', "")
+        vnet_obj.check_vnet_entry(dvs, vnet_b)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_b, '11002')
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '10.10.10.1')
+
+        vnet_obj.fetch_exist_entries(dvs)
+        create_vnet_routes(dvs, "110.100.1.1/32", vnet_a, "10.0.0.1")
+        vnet_obj.check_vnet_routes(dvs, vnet_a, "10.0.0.1", tunnel_name)
+        check_state_db_routes(dvs, vnet_a, "110.100.1.1/32", ["10.0.0.1"])
+        check_remove_routes_advertisement(dvs, "110.100.1.1/32")
+
+        create_vnet_routes(dvs, "110.100.2.1/32", vnet_b, "10.0.0.2")
+        vnet_obj.check_vnet_routes(dvs, vnet_b, "10.0.0.2", tunnel_name)
+        check_state_db_routes(dvs, vnet_b, "110.100.2.1/32", ["10.0.0.2"])
+        check_remove_routes_advertisement(dvs, "110.100.2.1/32")
+
+        delete_vnet_routes(dvs, "110.100.1.1/32", vnet_a)
+        vnet_obj.check_del_vnet_routes(dvs, vnet_a, ["110.100.1.1/32"])
+        check_remove_state_db_routes(dvs, vnet_a, "110.100.1.1/32")
+        check_remove_routes_advertisement(dvs, "110.100.1.1/32")
+
+        delete_vnet_entry(dvs, vnet_a)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_a)
+
+        vnet_obj.fetch_exist_entries(dvs)
+        create_vnet_routes(dvs, "110.100.2.2/32", vnet_b, "10.0.0.3")
+        vnet_obj.check_vnet_routes(dvs, vnet_b, "10.0.0.3", tunnel_name)
+        check_state_db_routes(dvs, vnet_b, "110.100.2.2/32", ["10.0.0.3"])
+        check_remove_routes_advertisement(dvs, "110.100.2.2/32")
+
+        vnet_obj.fetch_exist_entries(dvs)
+        create_vnet_entry(dvs, vnet_a, tunnel_name, '11001', "")
+        vnet_obj.check_vnet_entry(dvs, vnet_a)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_a, '11001')
+
+        vnet_obj.fetch_exist_entries(dvs)
+        vnet_obj.nh_ids = {}
+        create_vnet_routes(dvs, "110.100.1.1/32", vnet_a, "10.0.0.4")
+        vnet_obj.check_vnet_routes(dvs, vnet_a, "10.0.0.4", tunnel_name)
+        check_state_db_routes(dvs, vnet_a, "110.100.1.1/32", ["10.0.0.4"])
+        check_remove_routes_advertisement(dvs, "110.100.1.1/32")
+
+        delete_vnet_routes(dvs, "110.100.1.1/32", vnet_a)
+        delete_vnet_routes(dvs, "110.100.2.1/32", vnet_b)
+        delete_vnet_routes(dvs, "110.100.2.2/32", vnet_b)
+        vnet_obj.check_del_vnet_routes(dvs, vnet_a, ["110.100.1.1/32"])
+        vnet_obj.check_del_vnet_routes(dvs, vnet_b, ["110.100.2.1/32", "110.100.2.2/32"])
+        check_remove_state_db_routes(dvs, vnet_a, "110.100.1.1/32")
+        check_remove_state_db_routes(dvs, vnet_b, "110.100.2.1/32")
+        check_remove_state_db_routes(dvs, vnet_b, "110.100.2.2/32")
+
+        delete_vnet_entry(dvs, vnet_a)
+        delete_vnet_entry(dvs, vnet_b)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_a)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_b)
+        delete_vxlan_tunnel(dvs, tunnel_name)
+
+    '''
+    Two prefixes on one VNet with the same overlay DIP share one SAI tunnel NH.
+    Deleting the first prefix keeps the NH; deleting the last prefix removes it.
+    '''
+    def test_vnet_tunnel_nh_shared_endpoint(self, dvs, testlog):
+        vnet_obj = self.get_vnet_obj()
+
+        tunnel_name = 'tunnel_nh_share'
+        vnet_name = 'VnetNhShare'
+
+        vnet_obj.fetch_exist_entries(dvs)
+
+        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.2')
+        create_vnet_entry(dvs, vnet_name, tunnel_name, '11011', "")
+
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, '11011')
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '10.10.10.2')
+
+        nh_before = self._tunnel_encap_nh_count(dvs)
+
+        vnet_obj.fetch_exist_entries(dvs)
+        create_vnet_routes(dvs, "111.100.1.1/32", vnet_name, "11.0.0.1")
+        vnet_obj.check_vnet_routes(dvs, vnet_name, "11.0.0.1", tunnel_name)
+        check_state_db_routes(dvs, vnet_name, "111.100.1.1/32", ["11.0.0.1"])
+        check_remove_routes_advertisement(dvs, "111.100.1.1/32")
+
+        create_vnet_routes(dvs, "111.100.2.1/32", vnet_name, "11.0.0.1")
+        vnet_obj.check_vnet_routes(dvs, vnet_name, "11.0.0.1", tunnel_name)
+        check_state_db_routes(dvs, vnet_name, "111.100.2.1/32", ["11.0.0.1"])
+        check_remove_routes_advertisement(dvs, "111.100.2.1/32")
+
+        assert self._tunnel_encap_nh_count(dvs) == nh_before + 1
+
+        delete_vnet_routes(dvs, "111.100.1.1/32", vnet_name)
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, ["111.100.1.1/32"])
+        check_remove_state_db_routes(dvs, vnet_name, "111.100.1.1/32")
+        check_remove_routes_advertisement(dvs, "111.100.1.1/32")
+
+        assert self._tunnel_encap_nh_count(dvs) == nh_before + 1
+
+        delete_vnet_routes(dvs, "111.100.2.1/32", vnet_name)
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, ["111.100.2.1/32"])
+        check_remove_state_db_routes(dvs, vnet_name, "111.100.2.1/32")
+        check_remove_routes_advertisement(dvs, "111.100.2.1/32")
+
+        assert self._tunnel_encap_nh_count(dvs) == nh_before
+
+        delete_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_name)
+        delete_vxlan_tunnel(dvs, tunnel_name)
+
+    '''
+    Two VNets on the same tunnel share one SAI tunnel NH when they use the same overlay DIP.
+    '''
+    def test_vnet_tunnel_nh_shared_across_vnets(self, dvs, testlog):
+        vnet_obj = self.get_vnet_obj()
+
+        tunnel_name = 'tunnel_nh_xshare'
+        vnet_a = 'VnetNhXShareA'
+        vnet_b = 'VnetNhXShareB'
+
+        vnet_obj.fetch_exist_entries(dvs)
+
+        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.3')
+        create_vnet_entry(dvs, vnet_a, tunnel_name, '11021', "")
+        vnet_obj.check_vnet_entry(dvs, vnet_a)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_a, '11021')
+
+        create_vnet_entry(dvs, vnet_b, tunnel_name, '11022', "")
+        vnet_obj.check_vnet_entry(dvs, vnet_b)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_b, '11022')
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '10.10.10.3')
+
+        nh_before = self._tunnel_encap_nh_count(dvs)
+
+        vnet_obj.fetch_exist_entries(dvs)
+        create_vnet_routes(dvs, "112.100.1.1/32", vnet_a, "12.0.0.1")
+        vnet_obj.check_vnet_routes(dvs, vnet_a, "12.0.0.1", tunnel_name)
+        check_state_db_routes(dvs, vnet_a, "112.100.1.1/32", ["12.0.0.1"])
+        check_remove_routes_advertisement(dvs, "112.100.1.1/32")
+
+        create_vnet_routes(dvs, "112.100.2.1/32", vnet_b, "12.0.0.1")
+        vnet_obj.check_vnet_routes(dvs, vnet_b, "12.0.0.1", tunnel_name)
+        check_state_db_routes(dvs, vnet_b, "112.100.2.1/32", ["12.0.0.1"])
+        check_remove_routes_advertisement(dvs, "112.100.2.1/32")
+
+        assert self._tunnel_encap_nh_count(dvs) == nh_before + 1
+
+        delete_vnet_routes(dvs, "112.100.1.1/32", vnet_a)
+        vnet_obj.check_del_vnet_routes(dvs, vnet_a, ["112.100.1.1/32"])
+        check_remove_state_db_routes(dvs, vnet_a, "112.100.1.1/32")
+        check_remove_routes_advertisement(dvs, "112.100.1.1/32")
+
+        assert self._tunnel_encap_nh_count(dvs) == nh_before + 1
+
+        delete_vnet_routes(dvs, "112.100.2.1/32", vnet_b)
+        vnet_obj.check_del_vnet_routes(dvs, vnet_b, ["112.100.2.1/32"])
+        check_remove_state_db_routes(dvs, vnet_b, "112.100.2.1/32")
+        check_remove_routes_advertisement(dvs, "112.100.2.1/32")
+
+        assert self._tunnel_encap_nh_count(dvs) == nh_before
+
+        delete_vnet_entry(dvs, vnet_a)
+        delete_vnet_entry(dvs, vnet_b)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_a)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_b)
+        delete_vxlan_tunnel(dvs, tunnel_name)
+
+    '''
+    Two size-1 tunnel routes with unique overlay DIPs create two SAI tunnel NHs.
+    '''
+    def test_vnet_tunnel_nh_unique_endpoints(self, dvs, testlog):
+        vnet_obj = self.get_vnet_obj()
+
+        tunnel_name = 'tunnel_nh_uniq'
+        vnet_name = 'VnetNhUniq'
+
+        vnet_obj.fetch_exist_entries(dvs)
+
+        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.4')
+        create_vnet_entry(dvs, vnet_name, tunnel_name, '11031', "")
+
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, '11031')
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '10.10.10.4')
+
+        nh_before = self._tunnel_encap_nh_count(dvs)
+
+        vnet_obj.fetch_exist_entries(dvs)
+        create_vnet_routes(dvs, "113.100.1.1/32", vnet_name, "13.0.0.1")
+        vnet_obj.check_vnet_routes(dvs, vnet_name, "13.0.0.1", tunnel_name)
+        check_state_db_routes(dvs, vnet_name, "113.100.1.1/32", ["13.0.0.1"])
+        check_remove_routes_advertisement(dvs, "113.100.1.1/32")
+
+        create_vnet_routes(dvs, "113.100.2.1/32", vnet_name, "13.0.0.2")
+        vnet_obj.check_vnet_routes(dvs, vnet_name, "13.0.0.2", tunnel_name)
+        check_state_db_routes(dvs, vnet_name, "113.100.2.1/32", ["13.0.0.2"])
+        check_remove_routes_advertisement(dvs, "113.100.2.1/32")
+
+        assert self._tunnel_encap_nh_count(dvs) == nh_before + 2
+
+        delete_vnet_routes(dvs, "113.100.1.1/32", vnet_name)
+        delete_vnet_routes(dvs, "113.100.2.1/32", vnet_name)
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, ["113.100.1.1/32", "113.100.2.1/32"])
+        check_remove_state_db_routes(dvs, vnet_name, "113.100.1.1/32")
+        check_remove_state_db_routes(dvs, vnet_name, "113.100.2.1/32")
+        check_remove_routes_advertisement(dvs, "113.100.1.1/32")
+        check_remove_routes_advertisement(dvs, "113.100.2.1/32")
+
+        assert self._tunnel_encap_nh_count(dvs) == nh_before
+
+        delete_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_name)
+        delete_vxlan_tunnel(dvs, tunnel_name)
+
 # Add Dummy always-pass test at end as workaroud
 # for issue when Flaky fail on final test it invokes module tear-down before retrying
 def test_nonflaky_dummy():
     pass
+
