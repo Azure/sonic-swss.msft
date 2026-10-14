@@ -465,6 +465,7 @@ struct VNetLocEpAclRule
 };
 
 typedef std::map<NextHopGroupKey, NextHopGroupInfo> VNetNextHopGroupInfoTable;
+typedef std::map<IpPrefix, NextHopGroupInfo> VNetFgNextHopGroupInfoTable;
 typedef std::map<IpPrefix, VNetTunnelRouteEntry> VNetTunnelRouteTable;
 typedef std::map<IpAddress, BfdSessionInfo> BfdSessionTable;
 typedef std::map<IpPrefix, std::map<IpAddress, MonitorSessionInfo>> MonitorSessionTable;
@@ -522,6 +523,7 @@ private:
 
     bool hasNextHopGroup(const string&, const NextHopGroupKey&);
     sai_object_id_t getNextHopGroupId(const string&, const NextHopGroupKey&);
+    bool hasFgNextHopGroup(const string&, const IpPrefix&);
     bool addNextHopGroup(const string&, const NextHopGroupKey&, VNetVrfObject *vrf_obj,
                             const string& monitoring, const bool isLocalEp=false);
     bool removeNextHopGroup(const string&, const NextHopGroupKey&, VNetVrfObject *vrf_obj);
@@ -534,7 +536,7 @@ private:
     bool selectNextHopGroup(const string&, NextHopGroupKey&, NextHopGroupKey&, const string&, const int32_t, const int32_t, IpPrefix&,
                             VNetVrfObject *vrf_obj, NextHopGroupKey&,
                             const std::map<NextHopKey,IpAddress>& monitors=std::map<NextHopKey, IpAddress>());
-    bool selectFgNextHopGroup(const string&, NextHopGroupKey&, IpPrefix&, VNetVrfObject *vrf_obj, const uint16_t consistent_hashing_buckets, bool &isNextHopIdChanged);
+    bool selectFgNextHopGroup(const string&, NextHopGroupKey&, IpPrefix&, VNetVrfObject *vrf_obj, const uint16_t consistent_hashing_buckets, bool is_type_transition, bool &isNextHopIdChanged);
 
     void createBfdSession(const string& vnet, const NextHopKey& endpoint, const IpAddress& ipAddr, const int32_t rx_monitor_timer, const int32_t tx_monitor_timer);
     void removeBfdSession(const string& vnet, const NextHopKey& endpoint, const IpAddress& ipAddr);
@@ -545,7 +547,7 @@ private:
                             const string& monitoring, const int32_t rx_monitor_timer, const int32_t tx_monitor_timer,
                             IpPrefix& ipPrefix);
     void delEndpointMonitor(const string& vnet, NextHopGroupKey& nexthops, IpPrefix& ipPrefix);
-    void postRouteState(const string& vnet, IpPrefix& ipPrefix, NextHopGroupKey& nexthops, string& profile);
+    void postRouteState(const string& vnet, IpPrefix& ipPrefix, NextHopGroupKey& nexthops, string& profile, bool is_fg = false);
     void removeRouteState(const string& vnet, IpPrefix& ipPrefix);
     void addRouteAdvertisement(IpPrefix& ipPrefix, string& profile);
     void removeRouteAdvertisement(IpPrefix& ipPrefix);
@@ -579,6 +581,7 @@ private:
     VNetRouteTable syncd_routes_;
     VNetNextHopObserverTable next_hop_observers_;
     std::map<std::string, VNetNextHopGroupInfoTable> syncd_nexthop_groups_;
+    std::map<std::string, VNetFgNextHopGroupInfoTable> syncd_fg_nexthop_groups_;
     std::map<std::string, VNetTunnelRouteTable> syncd_tunnel_routes_;
     std::map<std::string, bool> vnet_tunnel_route_check_directly_connected;
     BfdSessionTable bfd_sessions_;

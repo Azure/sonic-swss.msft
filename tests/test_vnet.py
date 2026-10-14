@@ -3485,6 +3485,86 @@ class TestVnetOrch(object):
         delete_vxlan_tunnel(dvs, tunnel_name)
         vnet_obj.check_del_vxlan_tunnel(dvs)
 
+    '''
+    Fine-grained ECMP cross-prefix test
+    '''
+    def test_vnet_fg_ecmp_cross_prefix(self, dvs, testlog):
+        self.setup_db(dvs)
+        vnet_obj = self.get_vnet_obj()
+        asic_db = dvs.get_asic_db()
+        state_db = dvs.get_state_db()
+
+        tunnel_name = 'tunnel_37b'
+        vnet_name = 'Vnet37b'
+        prefix_a = "101.100.37.0/24"
+        prefix_b = "101.100.38.0/24"
+        bucket_size = 30
+        endpoints = '137.0.0.1,137.0.0.2,137.0.0.3'
+        macs = '00:12:34:56:78:aA,00:12:34:56:78:aB,00:12:34:56:78:aC'
+
+        vnet_obj.fetch_exist_entries(dvs)
+        initial_nhop_count = len(asic_db.get_keys(vnet_obj.ASIC_NEXT_HOP))
+
+        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.11')
+        create_vnet_entry(dvs, vnet_name, tunnel_name, '100037', "")
+
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, '100037')
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '10.10.10.11')
+
+        vnet_obj.fetch_exist_entries(dvs)
+        vr_id = vnet_obj.vr_map[vnet_name]['ing']
+
+        # Two different prefixes in the same vnet, sharing the identical FG-ECMP endpoint set
+        create_vnet_routes(dvs, prefix_a, vnet_name, endpoints, macs, consistent_hashing_buckets=bucket_size)
+        create_vnet_routes(dvs, prefix_b, vnet_name, endpoints, macs, consistent_hashing_buckets=bucket_size)
+
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, bucket_size * 2)
+        nhgid_a = test_fgnhg.validate_asic_nhg_fine_grained_ecmp(asic_db, prefix_a, bucket_size, vr_id)
+        nhgid_b = test_fgnhg.validate_asic_nhg_fine_grained_ecmp(asic_db, prefix_b, bucket_size, vr_id)
+
+        # Each prefix must get its own distinct NHG rather than aliasing the other's
+        assert nhgid_a != nhgid_b
+
+        check_state_db_routes(dvs, vnet_name, prefix_a, ['137.0.0.1', '137.0.0.2', '137.0.0.3'])
+        check_state_db_routes(dvs, vnet_name, prefix_b, ['137.0.0.1', '137.0.0.2', '137.0.0.3'])
+
+        asic_rt_key_a = test_fgnhg.get_asic_route_key(asic_db, prefix_a, vr_id)
+        asic_rt_key_b = test_fgnhg.get_asic_route_key(asic_db, prefix_b, vr_id)
+
+        # Delete prefix_a and confirm prefix_b's NHG/state survives untouched
+        delete_vnet_routes(dvs, prefix_a, vnet_name)
+        time.sleep(2)
+
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, [prefix_a])
+        check_remove_state_db_routes(dvs, vnet_name, prefix_a)
+        asic_db.wait_for_deleted_entry(test_fgnhg.ASIC_ROUTE_TB, asic_rt_key_a)
+
+        # prefix_b must still be intact: same NHG id, active members, route entry
+        check_state_db_routes(dvs, vnet_name, prefix_b, ['137.0.0.1', '137.0.0.2', '137.0.0.3'])
+        nhgid_b_after = test_fgnhg.validate_asic_nhg_fine_grained_ecmp(asic_db, prefix_b, bucket_size, vr_id)
+        assert nhgid_b_after == nhgid_b
+        assert asic_db.get_entry(test_fgnhg.ASIC_ROUTE_TB, asic_rt_key_b)
+
+        # Clean up
+        delete_vnet_routes(dvs, prefix_b, vnet_name)
+        time.sleep(2)
+
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, [prefix_b])
+        check_remove_state_db_routes(dvs, vnet_name, prefix_b)
+        asic_db.wait_for_deleted_entry(test_fgnhg.ASIC_ROUTE_TB, asic_rt_key_b)
+
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, 0)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG, 0)
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count)
+        state_db.wait_for_n_keys("FG_ROUTE_TABLE", 0)
+
+        delete_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_name)
+
+        delete_vxlan_tunnel(dvs, tunnel_name)
+        vnet_obj.check_del_vxlan_tunnel(dvs)
+
     """
     IP2Me link-local trap route for VNET VR
 
