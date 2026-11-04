@@ -351,7 +351,7 @@ sai_object_id_t VNetVrfObject::getTunnelNextHop(NextHopKey& nh)
 
 sai_object_id_t VNetVrfObject::getExistingTunnelNextHopId(NextHopKey& nh)
 {
-    auto tun_name = getTunnelName();
+    auto tun_name = getTunnelNameForNextHop(nh);
 
     VxlanTunnelOrch* vxlan_orch = gDirectory.get<VxlanTunnelOrch*>();
     if (!vxlan_orch->isTunnelExists(tun_name))
@@ -919,7 +919,7 @@ sai_object_id_t VNetRouteOrch::queueTunnelNextHop(const string& vnet,
                                                   VNetVrfObject* vrf_obj)
 {
     VxlanTunnelOrch* vxlan_orch = gDirectory.get<VxlanTunnelOrch*>();
-    const std::string tun_name = vrf_obj->getTunnelName();
+    const std::string tun_name = vrf_obj->getTunnelNameForNextHop(nhk);
     PendingTunnelNhKey key = makePendingTunnelNhKey(tun_name, nhk);
 
     auto it = pending_tunnel_nh_slots_.find(key);
@@ -959,7 +959,7 @@ bool VNetRouteOrch::isTunnelNextHopFailed(const string& vnet, const NextHopKey& 
 
     try
     {
-        const string tun_name = vrf_obj->getTunnelName();
+        const string tun_name = vrf_obj->getTunnelNameForNextHop(nh);
         return failed_tunnel_nh_keys_.count(makePendingTunnelNhKey(tun_name, nh)) > 0;
     }
     catch (const std::exception&)
@@ -1608,7 +1608,7 @@ bool VNetRouteOrch::queueTunnelNextHopRemove(const string& vnet,
     }
 
     VxlanTunnelOrch* vxlan_orch = gDirectory.get<VxlanTunnelOrch*>();
-    const string tun_name = vrf_obj->getTunnelName();
+    const string tun_name = vrf_obj->getTunnelNameForNextHop(nh);
     PendingTunnelNhKey key = makePendingTunnelNhKey(tun_name, nh);
     IpAddress ip_addr = nh.ip_address;
     MacAddress mac_addr = nh.mac_address;
@@ -2561,7 +2561,7 @@ bool VNetRouteOrch::selectFgNextHopGroup(const string& vnet,
 
     for (auto nh : nexthops.getNextHops())
     {
-        const string tun_name = vrf_obj->getTunnelName();
+        const string tun_name = vrf_obj->getTunnelNameForNextHop(nh);
         PendingTunnelNhKey nh_key = makePendingTunnelNhKey(tun_name, nh);
         if (!old_members.count(nh) || pending_tunnel_nh_slots_.find(nh_key) != pending_tunnel_nh_slots_.end())
         {
@@ -3860,7 +3860,7 @@ void VNetRouteOrch::createCustomBFDMonitoringSession(const string& vnet, const N
         vector<FieldValueTuple>    data;
         string key = "default:default:" + monitor_addr.to_string();
 
-        auto tun_name = vnet_orch_->getTunnelName(vnet);
+        auto tun_name = vnet_orch_->getTunnelNameForNextHop(vnet, endpoint);
         VxlanTunnelOrch* vxlan_orch = gDirectory.get<VxlanTunnelOrch*>();
         auto tunnel_obj = vxlan_orch->getVxlanTunnel(tun_name);
         /*
