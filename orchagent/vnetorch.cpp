@@ -49,12 +49,25 @@ extern BfdOrch *gBfdOrch;
 extern SwitchOrch *gSwitchOrch;
 extern TunnelDecapOrch *gTunneldecapOrch;
 extern FgNhgOrch *gFgNhgOrch;
+
+#define VXLAN_NAME_PREFIX              "Vxlan"
+#define MAX_VXLAN_TUNNELS              2
+#define MAX_IPv4_VXLAN_TUNNELS         1
+#define MAX_IPv6_VXLAN_TUNNELS         1
+
 /*
  * VRF Modeling and VNetVrf class definitions
  */
 std::vector<VR_TYPE> vr_cntxt;
 
 VNetVrfObject::VNetVrfObject(const std::string& vnet, const VNetInfo& vnetInfo,
+                             vector<sai_attribute_t>& attrs) : VNetObject(vnetInfo)
+{
+    vnet_name_ = vnet;
+    createObj(attrs);
+}
+
+VNetVrfObject::VNetVrfObject(const std::string& vnet, const VNetInfoMultiTunnel& vnetInfo,
                              vector<sai_attribute_t>& attrs) : VNetObject(vnetInfo)
 {
     vnet_name_ = vnet;
@@ -318,7 +331,7 @@ bool VNetVrfObject::getRouteNextHop(IpPrefix& ipPrefix, nextHop& nh)
 sai_object_id_t VNetVrfObject::getTunnelNextHop(NextHopKey& nh)
 {
     sai_object_id_t nh_id = SAI_NULL_OBJECT_ID;
-    auto tun_name = getTunnelName();
+    auto tun_name = getTunnelNameForNextHop(nh);
 
     VxlanTunnelOrch* vxlan_orch = gDirectory.get<VxlanTunnelOrch*>();
 
@@ -361,7 +374,7 @@ sai_object_id_t VNetVrfObject::getExistingTunnelNextHopId(NextHopKey& nh)
 
 bool VNetVrfObject::removeTunnelNextHop(NextHopKey& nh)
 {
-    auto tun_name = getTunnelName();
+    auto tun_name = getTunnelNameForNextHop(nh);
 
     VxlanTunnelOrch* vxlan_orch = gDirectory.get<VxlanTunnelOrch*>();
 
@@ -373,6 +386,32 @@ bool VNetVrfObject::removeTunnelNextHop(NextHopKey& nh)
     }
 
     return true;
+}
+
+string VNetVrfObject::getTunnelNameForNextHop(const NextHopKey& nh)
+{
+    if (!IsMultiTunnelVnet())
+    {
+        return getTunnelName();
+    }
+
+    auto nh_ip_family = nh.ip_address.isV4() ? AF_INET : AF_INET6;
+    auto tunnels = getTunnelNames();
+    VxlanTunnelOrch* vxlan_orch = gDirectory.get<VxlanTunnelOrch*>();
+
+    for (string tunnel_name : tunnels)
+    {
+        auto tun_obj = vxlan_orch->getVxlanTunnel(tunnel_name);
+        auto tun_ip_family = tun_obj->getSrcIP().isV4() ? AF_INET : AF_INET6;
+
+        if (nh_ip_family == tun_ip_family)
+        {
+            return tunnel_name;
+        }
+    }
+
+    throw std::runtime_error("NH Tunnel get name failed for " + vnet_name_ +
+                                 " no matching tunnel found");
 }
 
 VNetVrfObject::~VNetVrfObject()
@@ -406,6 +445,14 @@ VNetVrfObject::~VNetVrfObject()
 
 template <class T>
 std::unique_ptr<T> VNetOrch::createObject(const string& vnet_name, const VNetInfo& vnet_info,
+                                          vector<sai_attribute_t>& attrs)
+{
+    std::unique_ptr<T> vnet_obj(new T(vnet_name, vnet_info, attrs));
+    return vnet_obj;
+}
+
+template <class T>
+std::unique_ptr<T> VNetOrch::createObject(const string& vnet_name, const VNetInfoMultiTunnel& vnet_info,
                                           vector<sai_attribute_t>& attrs)
 {
     std::unique_ptr<T> vnet_obj(new T(vnet_name, vnet_info, attrs));
@@ -479,6 +526,7 @@ bool VNetOrch::addOperation(const Request& request)
     bool peer = false, create = false, advertise_prefix = false;
     uint32_t vni=0;
     string tunnel;
+    set<string> tunnel_list = {};
     string scope;
     swss::MacAddress overlay_dmac;
 
@@ -503,6 +551,10 @@ bool VNetOrch::addOperation(const Request& request)
         else if (name == "vxlan_tunnel")
         {
             tunnel = request.getAttrString("vxlan_tunnel");
+        }
+        else if (name == "vxlan_tunnel_list")
+        {
+            tunnel_list = request.getAttrSet("vxlan_tunnel_list");
         }
         else if (name == "scope")
         {
@@ -530,31 +582,78 @@ bool VNetOrch::addOperation(const Request& request)
     {
         VNetObject_T obj;
         auto it = vnet_table_.find(vnet_name);
+        set<string> tunnels;
         if (isVnetExecVrf())
         {
             VxlanTunnelOrch* vxlan_orch = gDirectory.get<VxlanTunnelOrch*>();
 
-            if (!vxlan_orch->isTunnelExists(tunnel))
+            if (tunnel_list.empty() && tunnel.empty())
             {
-                SWSS_LOG_WARN("Vxlan tunnel '%s' doesn't exist", tunnel.c_str());
+                SWSS_LOG_ERROR("Vxlan tunnel or tunnel list must be specified for VNET '%s'", vnet_name.c_str());
+                return false;
+            }
+
+            if (!tunnel_list.empty())
+            {
+                tunnels = tunnel_list;
+            }
+            else
+            {
+                tunnels.insert(tunnel);
+            }
+
+            auto ipv4_tun_count = 0;
+            auto ipv6_tun_count = 0;
+            for (const auto& tun_name : tunnels)
+            {
+                if (!vxlan_orch->isTunnelExists(tun_name))
+                {
+                    SWSS_LOG_WARN("Vxlan tunnel '%s' doesn't exist", tun_name.c_str());
+                    return false;
+                }
+
+                if (vxlan_orch->getVxlanTunnel(tun_name)->getSrcIP().isV4())
+                {
+                    ipv4_tun_count++;
+                }
+                else
+                {
+                    ipv6_tun_count++;
+                }
+            }
+
+            if (ipv4_tun_count > MAX_IPv4_VXLAN_TUNNELS || ipv6_tun_count > MAX_IPv6_VXLAN_TUNNELS
+                || tunnels.size() > MAX_VXLAN_TUNNELS)
+            {
+                SWSS_LOG_ERROR("Too many vxlan tunnels for VNET '%s'", vnet_name.c_str());
                 return false;
             }
 
             if (it == std::end(vnet_table_))
             {
-                VNetInfo vnet_info = { tunnel, vni, peer_list, scope, advertise_prefix, overlay_dmac };
-                obj = createObject<VNetVrfObject>(vnet_name, vnet_info, attrs);
-                create = true;
-
-                VNetVrfObject *vrf_obj = dynamic_cast<VNetVrfObject*>(obj.get());
-                if (!vxlan_orch->createVxlanTunnelMap(tunnel, TUNNEL_MAP_T_VIRTUAL_ROUTER, vni,
-                                                      vrf_obj->getEncapMapId(), vrf_obj->getDecapMapId(), VXLAN_ENCAP_TTL))
+                if (!tunnel_list.empty())
                 {
-                    SWSS_LOG_ERROR("VNET '%s', tunnel '%s', map create failed",
-                                    vnet_name.c_str(), tunnel.c_str());
-                    return false;
+                    VNetInfoMultiTunnel vnet_info = { tunnel_list, vni, peer_list, scope, advertise_prefix, overlay_dmac };
+                    obj = createObject<VNetVrfObject>(vnet_name, vnet_info, attrs);
+                }
+                else
+                {
+                    VNetInfo vnet_info = { tunnel, vni, peer_list, scope, advertise_prefix, overlay_dmac };
+                    obj = createObject<VNetVrfObject>(vnet_name, vnet_info, attrs);
                 }
 
+                VNetVrfObject *vrf_obj = dynamic_cast<VNetVrfObject*>(obj.get());
+                for (const auto& tun_name : tunnels)
+                {
+                    if (!vxlan_orch->createVxlanTunnelMap(tun_name, TUNNEL_MAP_T_VIRTUAL_ROUTER, vni,
+                                                    vrf_obj->getEncapMapId(), vrf_obj->getDecapMapId(), VXLAN_ENCAP_TTL))
+                    {
+                        SWSS_LOG_ERROR("VNET '%s', tunnel '%s', map create failed",
+                                    vnet_name.c_str(), tun_name.c_str());
+                        return false;
+                    }
+                }
+                create = true;
                 SWSS_LOG_NOTICE("VNET '%s' was added ", vnet_name.c_str());
             }
             else
@@ -623,10 +722,14 @@ bool VNetOrch::delOperation(const Request& request)
                 return false;
             }
 
-            if (!vxlan_orch->removeVxlanTunnelMap(vrf_obj->getTunnelName(), vrf_obj->getVni()))
+            set<string> tunnels = vrf_obj->getTunnelNames();
+            for (const auto& tunnel : tunnels)
             {
-                SWSS_LOG_ERROR("VNET '%s' map delete failed", vnet_name.c_str());
-                return false;
+                if (!vxlan_orch->removeVxlanTunnelMap(tunnel, vrf_obj->getVni()))
+                {
+                    SWSS_LOG_ERROR("VNET '%s' map delete failed", vnet_name.c_str());
+                    return false;
+                }
             }
         }
     }
@@ -3634,7 +3737,7 @@ void VNetRouteOrch::createBfdSession(const string& vnet, const NextHopKey& endpo
         vector<FieldValueTuple>    data;
         string key = "default:default:" + monitor_addr.to_string();
 
-        auto tun_name = vnet_orch_->getTunnelName(vnet);
+        auto tun_name = vnet_orch_->getTunnelNameForNextHop(vnet, endpoint);
         VxlanTunnelOrch* vxlan_orch = gDirectory.get<VxlanTunnelOrch*>();
         auto tunnel_obj = vxlan_orch->getVxlanTunnel(tun_name);
         /*
@@ -5226,99 +5329,6 @@ void VNetRouteOrch::doTask(Consumer &consumer)
         }
     }
     bulkNhgReducedRefCnt.clear();
-}
-
-VNetCfgRouteOrch::VNetCfgRouteOrch(DBConnector *db, DBConnector *appDb, vector<string> &tableNames)
-                                  : Orch(db, tableNames),
-                                  m_appVnetRouteTable(appDb, APP_VNET_RT_TABLE_NAME),
-                                  m_appVnetRouteTunnelTable(appDb, APP_VNET_RT_TUNNEL_TABLE_NAME)
-{
-}
-
-void VNetCfgRouteOrch::doTask(Consumer &consumer)
-{
-    SWSS_LOG_ENTER();
-
-    const string & table_name = consumer.getTableName();
-    auto it = consumer.m_toSync.begin();
-
-    while (it != consumer.m_toSync.end())
-    {
-        bool task_result = false;
-        auto t = it->second;
-        const string & op = kfvOp(t);
-        if (table_name == CFG_VNET_RT_TABLE_NAME)
-        {
-            task_result = doVnetRouteTask(t, op);
-        }
-        else if (table_name == CFG_VNET_RT_TUNNEL_TABLE_NAME)
-        {
-            task_result = doVnetTunnelRouteTask(t, op);
-        }
-        else
-        {
-            SWSS_LOG_ERROR("Unknown table : %s", table_name.c_str());
-        }
-
-        if (task_result == true)
-        {
-            it = consumer.m_toSync.erase(it);
-        }
-        else
-        {
-            ++it;
-        }
-    }
-}
-
-bool VNetCfgRouteOrch::doVnetTunnelRouteTask(const KeyOpFieldsValuesTuple & t, const string & op)
-{
-    SWSS_LOG_ENTER();
-
-    string vnetRouteTunnelName = kfvKey(t);
-    replace(vnetRouteTunnelName.begin(), vnetRouteTunnelName.end(), config_db_key_delimiter, delimiter);
-    if (op == SET_COMMAND)
-    {
-        m_appVnetRouteTunnelTable.set(vnetRouteTunnelName, kfvFieldsValues(t));
-        SWSS_LOG_INFO("Create vnet route tunnel %s", vnetRouteTunnelName.c_str());
-    }
-    else if (op == DEL_COMMAND)
-    {
-        m_appVnetRouteTunnelTable.del(vnetRouteTunnelName);
-        SWSS_LOG_INFO("Delete vnet route tunnel %s", vnetRouteTunnelName.c_str());
-    }
-    else
-    {
-        SWSS_LOG_ERROR("Unknown command : %s", op.c_str());
-        return false;
-    }
-
-    return true;
-}
-
-bool VNetCfgRouteOrch::doVnetRouteTask(const KeyOpFieldsValuesTuple & t, const string & op)
-{
-    SWSS_LOG_ENTER();
-
-    string vnetRouteName = kfvKey(t);
-    replace(vnetRouteName.begin(), vnetRouteName.end(), config_db_key_delimiter, delimiter);
-    if (op == SET_COMMAND)
-    {
-        m_appVnetRouteTable.set(vnetRouteName, kfvFieldsValues(t));
-        SWSS_LOG_INFO("Create vnet route %s", vnetRouteName.c_str());
-    }
-    else if (op == DEL_COMMAND)
-    {
-        m_appVnetRouteTable.del(vnetRouteName);
-        SWSS_LOG_INFO("Delete vnet route %s", vnetRouteName.c_str());
-    }
-    else
-    {
-        SWSS_LOG_ERROR("Unknown command : %s", op.c_str());
-        return false;
-    }
-
-    return true;
 }
 
 MonitorOrch::MonitorOrch(DBConnector *db, string tableName):
