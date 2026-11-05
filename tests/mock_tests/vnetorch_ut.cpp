@@ -479,6 +479,12 @@ namespace vnetorch_test
         TunnelCaptures m_tun;
 
         unique_ptr<VNetRouteOrch> m_vnetRouteOrch;
+        // Mirrors CONFIG_DB VNET_ROUTE / VNET_ROUTE_TUNNEL into the APP_DB tables
+        // VNetRouteOrch consumes, exactly as orchdaemon's VNetCfgRouteOrch does
+        // (orchdaemon.cpp:307). The route SET helpers drive routes through this
+        // real CONFIG->APP path, matching the VS test's create_vnet_routes /
+        // create_vnet_local_routes (which write CONFIG_DB VNET_ROUTE[_TUNNEL]).
+        unique_ptr<VNetCfgRouteOrch> m_vnetCfgRouteOrch;
         RouteCaptures m_rt;
 
         // Consumes STATE_DB VNET_MONITOR_TABLE (the table update_monitor_session_
@@ -632,6 +638,17 @@ namespace vnetorch_test
             // teardown after PreTearDown, so no stale pointer survives the test.
             gDirectory.set(m_vnetRouteOrch.get());
 
+            // The real CONFIG->APP translation for VNET routes
+            // (orchdaemon.cpp:307). The route SET helpers write CONFIG_DB
+            // VNET_ROUTE[_TUNNEL] and drive this orch, which mirrors each row to
+            // the APP_DB VNET_ROUTE[_TUNNEL]_TABLE that VNetRouteOrch consumes --
+            // so the mock exercises doVnetRouteTask/doVnetTunnelRouteTask exactly
+            // as the VS test's create_vnet_routes/create_vnet_local_routes did.
+            vector<string> cfg_vnet_route_tables = {
+                CFG_VNET_RT_TABLE_NAME, CFG_VNET_RT_TUNNEL_TABLE_NAME};
+            m_vnetCfgRouteOrch = make_unique<VNetCfgRouteOrch>(
+                m_config_db.get(), m_app_db.get(), cfg_vnet_route_tables);
+
             m_monitorOrch = make_unique<MonitorOrch>(
                 m_state_db.get(), STATE_VNET_MONITOR_TABLE_NAME);
 
@@ -668,6 +685,7 @@ namespace vnetorch_test
             m_bfdMonitorOrch.reset();
             m_monitorOrch.reset();
             m_vnetRouteOrch.reset();
+            m_vnetCfgRouteOrch.reset();
             delete gBfdOrch;
             gBfdOrch = nullptr;
             delete gTunneldecapOrch;
@@ -1057,21 +1075,28 @@ namespace vnetorch_test
             static_cast<Orch *>(m_VxlanTunnelOrch)->doTask(*consumer);
         }
 
-        // CONFIG_DB -> APP_DB translation for VNET routes moved to vnetmgrd,
-        // so write APP_DB directly with the "vnet:prefix" key vnetmgrd produces.
-        void programVnetRoute(const string &appTable,
-                              const string &vnet, const string &prefix,
-                              const vector<FieldValueTuple> &fvs)
+        // Program a VNET route the way the VS tests did: write CONFIG_DB
+        // VNET_ROUTE_TUNNEL / VNET_ROUTE (key "vnet|prefix") and drive
+        // VNetCfgRouteOrch, which mirrors it (doVnetTunnelRouteTask /
+        // doVnetRouteTask) to the APP_DB table VNetRouteOrch consumes; then drive
+        // VNetRouteOrch off that APP_DB row. This exercises the real CONFIG->APP
+        // translation instead of writing APP_DB directly.
+        void programVnetRouteViaCfg(const string &cfgTable, const string &appTable,
+                                    const string &vnet, const string &prefix,
+                                    const vector<FieldValueTuple> &fvs)
         {
+            Table cfg(m_config_db.get(), cfgTable);
+            cfg.set(vnet + "|" + prefix, fvs);
+            m_vnetCfgRouteOrch->addExistingData(&cfg);
+            static_cast<Orch *>(m_vnetCfgRouteOrch.get())->doTask();
             Table app(m_app_db.get(), appTable);
-            app.set(vnet + ":" + prefix, fvs);
             m_vnetRouteOrch->addExistingData(&app);
             static_cast<Orch *>(m_vnetRouteOrch.get())->doTask();
         }
 
         // The VS test writes CONFIG_DB VNET_ROUTE_TUNNEL and relies on
         // VNetCfgRouteOrch to mirror it to APP_DB VNET_ROUTE_TUNNEL_TABLE; the
-        // mock drives that same path via programVnetRoute. endpoint is a
+        // mock drives that same path via programVnetRouteViaCfg. endpoint is a
         // comma-separated list -> a single endpoint programs one tunnel next
         // hop; multiple endpoints program an ECMP next hop group.
         void setVnetRoute(const string &vnet, const string &prefix,
@@ -1082,7 +1107,8 @@ namespace vnetorch_test
             if (!mac.empty()) fvs.push_back({"mac_address", mac});
             if (!vni.empty()) fvs.push_back({"vni", vni});
             if (!metric.empty()) fvs.push_back({"metric", metric});
-            programVnetRoute(APP_VNET_RT_TUNNEL_TABLE_NAME, vnet, prefix, fvs);
+            programVnetRouteViaCfg(CFG_VNET_RT_TUNNEL_TABLE_NAME,
+                                   APP_VNET_RT_TUNNEL_TABLE_NAME, vnet, prefix, fvs);
         }
 
         void delVnetRoute(const string &vnet, const string &prefix)
@@ -1113,7 +1139,8 @@ namespace vnetorch_test
             vector<FieldValueTuple> fvs = {{"endpoint", endpoints},
                                            {"endpoint_monitor", monitors}};
             if (!profile.empty()) fvs.push_back({"profile", profile});
-            programVnetRoute(APP_VNET_RT_TUNNEL_TABLE_NAME, vnet, prefix, fvs);
+            programVnetRouteViaCfg(CFG_VNET_RT_TUNNEL_TABLE_NAME,
+                                   APP_VNET_RT_TUNNEL_TABLE_NAME, vnet, prefix, fvs);
             syncBfd();
             syncTunnelDecapTerm();
         }
@@ -1157,7 +1184,8 @@ namespace vnetorch_test
             if (rx_monitor_timer >= 0) fvs.push_back({"rx_monitor_timer", to_string(rx_monitor_timer)});
             if (tx_monitor_timer >= 0) fvs.push_back({"tx_monitor_timer", to_string(tx_monitor_timer)});
             if (!pinned_state.empty()) fvs.push_back({"pinned_state", pinned_state});
-            programVnetRoute(APP_VNET_RT_TUNNEL_TABLE_NAME, vnet, prefix, fvs);
+            programVnetRouteViaCfg(CFG_VNET_RT_TUNNEL_TABLE_NAME,
+                                   APP_VNET_RT_TUNNEL_TABLE_NAME, vnet, prefix, fvs);
             if (monitoring == "custom_bfd") syncBfd();
         }
 
@@ -2014,7 +2042,7 @@ namespace vnetorch_test
 
         // The VS test writes CONFIG_DB VNET_ROUTE (ifname + nexthop) and relies on
         // VNetCfgRouteOrch to mirror it to APP_DB VNET_ROUTE_TABLE; the mock drives
-        // that same path via programVnetRoute. A non-empty
+        // that same CONFIG->APP path via programVnetRouteViaCfg. A non-empty
         // nexthop list makes this a VNET local route: VNetRouteOrch::handleRoutes()
         // -> doRouteTask() builds an ip@ifname next-hop-group string and programs
         // it through gRouteOrch, resolving each nexthop to the neighbor's
@@ -2023,7 +2051,8 @@ namespace vnetorch_test
                                const string &ifnames, const string &nexthops)
         {
             vector<FieldValueTuple> fvs = {{"ifname", ifnames}, {"nexthop", nexthops}};
-            programVnetRoute(APP_VNET_RT_TABLE_NAME, vnet, prefix, fvs);
+            programVnetRouteViaCfg(CFG_VNET_RT_TABLE_NAME,
+                                   APP_VNET_RT_TABLE_NAME, vnet, prefix, fvs);
         }
 
         void delVnetLocalRoute(const string &vnet, const string &prefix)
@@ -2122,6 +2151,159 @@ namespace vnetorch_test
                 << "prefix " << prefix << " next-hop RIF set mismatch";
         }
     };
+
+    TEST_F(VNetOrchTest, VnetLoopbackIp2MeRoutes)
+    {
+        setVxlanTunnel("tunnel_v4", "10.1.0.32");
+        setVnet("Vnet1", "tunnel_v4", "10001", "");
+
+        sai_object_id_t vrf_id = SAI_NULL_OBJECT_ID;
+        ASSERT_TRUE(m_vnetOrch->getVrfIdByVnetName("Vnet1", vrf_id));
+        ASSERT_NE(vrf_id, gVirtualRouterId);
+
+        auto consumer = dynamic_cast<Consumer *>(gIntfsOrch->getExecutor(APP_INTF_TABLE_NAME));
+        ASSERT_NE(consumer, nullptr);
+        consumer->addToSync({
+            {"Loopback100", SET_COMMAND, {{"vnet_name", "Vnet1"}}},
+            {"Loopback100:198.51.100.1/32", SET_COMMAND, {{"scope", "global"}, {"family", "IPv4"}}},
+            {"Loopback100:2001:db8::1/128", SET_COMMAND, {{"scope", "global"}, {"family", "IPv6"}}}
+        });
+        static_cast<Orch *>(gIntfsOrch)->doTask();
+
+        ASSERT_TRUE(consumer->m_toSync.empty());
+        auto syncd = gIntfsOrch->getSyncdIntfses();
+        ASSERT_NE(syncd.find("Loopback100"), syncd.end());
+        ASSERT_EQ(syncd.at("Loopback100").vrf_id, vrf_id);
+        ASSERT_EQ(syncd.at("Loopback100").ip_addresses.size(), 2U);
+
+        Port cpu_port;
+        gPortsOrch->getCpuPort(cpu_port);
+        for (const auto &prefix : {string("198.51.100.1/32"), string("2001:db8::1/128")})
+        {
+            const auto *route = findRoute(prefix.substr(0, prefix.find('/')));
+            ASSERT_NE(route, nullptr);
+            ASSERT_EQ(route->vr, vrf_id);
+            ASSERT_EQ(sai_serialize_ip_prefix(route->dest), prefix);
+            ASSERT_EQ(route->next_hop_id, cpu_port.m_port_id);
+            ASSERT_EQ(route->packet_action, SAI_PACKET_ACTION_FORWARD);
+        }
+
+        consumer->addToSync({{"Loopback100", DEL_COMMAND, {}}});
+        static_cast<Orch *>(gIntfsOrch)->doTask();
+        ASSERT_EQ(consumer->m_toSync.size(), 1U);
+        ASSERT_NE(gIntfsOrch->getSyncdIntfses().count("Loopback100"), 0U);
+
+        EXPECT_CALL(*mock_sai_route_api,
+                    remove_route_entry(testing::Field(&sai_route_entry_t::vr_id, vrf_id)))
+            .Times(2);
+        consumer->addToSync({
+            {"Loopback100:198.51.100.1/32", DEL_COMMAND, {}},
+            {"Loopback100:2001:db8::1/128", DEL_COMMAND, {}}
+        });
+        static_cast<Orch *>(gIntfsOrch)->doTask();
+        ASSERT_EQ(findRoute("198.51.100.1"), nullptr);
+        ASSERT_EQ(findRoute("2001:db8::1"), nullptr);
+        ASSERT_TRUE(testing::Mock::VerifyAndClearExpectations(mock_sai_route_api));
+
+        static_cast<Orch *>(gIntfsOrch)->doTask();
+        ASSERT_TRUE(consumer->m_toSync.empty());
+        ASSERT_EQ(gIntfsOrch->getSyncdIntfses().count("Loopback100"), 0U);
+        delVnet("Vnet1");
+        ASSERT_FALSE(m_vnetOrch->isVnetExists("Vnet1"));
+        delVxlanTunnel("tunnel_v4");
+    }
+
+    TEST_F(VNetOrchTest, VnetLoopbackWaitsForVnet)
+    {
+        auto consumer = dynamic_cast<Consumer *>(gIntfsOrch->getExecutor(APP_INTF_TABLE_NAME));
+        ASSERT_NE(consumer, nullptr);
+        consumer->addToSync({
+            {"Loopback100", SET_COMMAND, {{"vnet_name", "Vnet1"}}},
+            {"Loopback100:198.51.100.1/32", SET_COMMAND, {{"scope", "global"}, {"family", "IPv4"}}}
+        });
+        static_cast<Orch *>(gIntfsOrch)->doTask();
+
+        ASSERT_EQ(consumer->m_toSync.size(), 2U);
+        ASSERT_EQ(gIntfsOrch->getSyncdIntfses().count("Loopback100"), 0U);
+        ASSERT_EQ(findRoute("198.51.100.1"), nullptr);
+
+        setVxlanTunnel("tunnel_v4", "10.1.0.32");
+        setVnet("Vnet1", "tunnel_v4", "10001", "");
+        static_cast<Orch *>(gIntfsOrch)->doTask();
+
+        ASSERT_TRUE(consumer->m_toSync.empty());
+        sai_object_id_t vrf_id = SAI_NULL_OBJECT_ID;
+        ASSERT_TRUE(m_vnetOrch->getVrfIdByVnetName("Vnet1", vrf_id));
+        ASSERT_NE(vrf_id, gVirtualRouterId);
+        const auto *route = findRoute("198.51.100.1");
+        ASSERT_NE(route, nullptr);
+        ASSERT_EQ(route->vr, vrf_id);
+
+        consumer->addToSync({
+            {"Loopback100:198.51.100.1/32", DEL_COMMAND, {}},
+            {"Loopback100", DEL_COMMAND, {}}
+        });
+        static_cast<Orch *>(gIntfsOrch)->doTask();
+        static_cast<Orch *>(gIntfsOrch)->doTask();
+        ASSERT_TRUE(consumer->m_toSync.empty());
+        ASSERT_EQ(findRoute("198.51.100.1"), nullptr);
+        ASSERT_EQ(gIntfsOrch->getSyncdIntfses().count("Loopback100"), 0U);
+        delVnet("Vnet1");
+        ASSERT_FALSE(m_vnetOrch->isVnetExists("Vnet1"));
+        delVxlanTunnel("tunnel_v4");
+    }
+
+    TEST_F(VNetOrchTest, VnetLoopbackBindWaitsForIpRemoval)
+    {
+        setVxlanTunnel("tunnel_v4", "10.1.0.32");
+        setVnet("Vnet1", "tunnel_v4", "10001", "");
+        sai_object_id_t vrf_id = SAI_NULL_OBJECT_ID;
+        ASSERT_TRUE(m_vnetOrch->getVrfIdByVnetName("Vnet1", vrf_id));
+        ASSERT_NE(vrf_id, gVirtualRouterId);
+
+        auto consumer = dynamic_cast<Consumer *>(gIntfsOrch->getExecutor(APP_INTF_TABLE_NAME));
+        ASSERT_NE(consumer, nullptr);
+        consumer->addToSync({
+            {"Loopback100", SET_COMMAND, {}},
+            {"Loopback100:198.51.100.1/32", SET_COMMAND, {{"scope", "global"}, {"family", "IPv4"}}}
+        });
+        static_cast<Orch *>(gIntfsOrch)->doTask();
+        ASSERT_EQ(gIntfsOrch->getSyncdIntfses().at("Loopback100").vrf_id, gVirtualRouterId);
+
+        // The bare interface SET is processed before the address DEL in this batch.
+        consumer->addToSync({
+            {"Loopback100", SET_COMMAND, {{"vnet_name", "Vnet1"}}},
+            {"Loopback100:198.51.100.1/32", DEL_COMMAND, {}}
+        });
+        static_cast<Orch *>(gIntfsOrch)->doTask();
+        ASSERT_EQ(consumer->m_toSync.size(), 1U);
+        ASSERT_EQ(gIntfsOrch->getSyncdIntfses().at("Loopback100").vrf_id, gVirtualRouterId);
+        ASSERT_EQ(findRoute("198.51.100.1"), nullptr);
+
+        static_cast<Orch *>(gIntfsOrch)->doTask();
+        ASSERT_TRUE(consumer->m_toSync.empty());
+        ASSERT_EQ(gIntfsOrch->getSyncdIntfses().at("Loopback100").vrf_id, vrf_id);
+        consumer->addToSync({
+            {"Loopback100:198.51.100.1/32", SET_COMMAND, {{"scope", "global"}, {"family", "IPv4"}}}
+        });
+        static_cast<Orch *>(gIntfsOrch)->doTask();
+        const auto *route = findRoute("198.51.100.1");
+        ASSERT_NE(route, nullptr);
+        ASSERT_EQ(route->vr, vrf_id);
+
+        consumer->addToSync({
+            {"Loopback100", DEL_COMMAND, {}},
+            {"Loopback100:198.51.100.1/32", DEL_COMMAND, {}}
+        });
+        static_cast<Orch *>(gIntfsOrch)->doTask();
+        static_cast<Orch *>(gIntfsOrch)->doTask();
+        ASSERT_TRUE(consumer->m_toSync.empty());
+        ASSERT_EQ(findRoute("198.51.100.1"), nullptr);
+        ASSERT_EQ(gIntfsOrch->getSyncdIntfses().count("Loopback100"), 0U);
+        delVnet("Vnet1");
+        ASSERT_FALSE(m_vnetOrch->isVnetExists("Vnet1"));
+        delVxlanTunnel("tunnel_v4");
+    }
 
     // Minimal end-to-end check that the fixture drives VNetOrch: creating a VNET
     // that references a VXLAN tunnel programs a SAI virtual router for the VNET

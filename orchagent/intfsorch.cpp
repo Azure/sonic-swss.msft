@@ -839,6 +839,18 @@ void IntfsOrch::doTask(Consumer &consumer)
             {
                 if (!ip_prefix_in_key)
                 {
+                    if (!vnet_name.empty())
+                    {
+                        VNetOrch* vnet_orch = gDirectory.get<VNetOrch*>();
+                        if (!vnet_orch->getVrfIdByVnetName(vnet_name, vrf_id))
+                        {
+                            SWSS_LOG_DEBUG("VNET '%s' is not ready for loopback interface '%s'",
+                                           vnet_name.c_str(), alias.c_str());
+                            it++;
+                            continue;
+                        }
+                    }
+
                     if (m_syncdIntfses.find(alias) == m_syncdIntfses.end())
                     {
                         IntfsEntry intfs_entry;
@@ -858,7 +870,11 @@ void IntfsOrch::doTask(Consumer &consumer)
                         }
                         else
                         {
-                            SWSS_LOG_ERROR("Failed to set interface '%s' to VRF ID '%d' because it has IP addresses associated with it.", alias.c_str(), vrf_id);
+                            SWSS_LOG_NOTICE("Interface '%s' still has %zu IP address(es); deferring VRF '%s' bind until pending IP removals are processed.",
+                                          alias.c_str(), m_syncdIntfses[alias].ip_addresses.size(),
+                                          (vnet_name.empty() ? vrf_name : vnet_name).c_str());
+                            it++;
+                            continue;
                         }
                     }
                 }
