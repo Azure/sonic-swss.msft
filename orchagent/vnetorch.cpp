@@ -1334,14 +1334,20 @@ void VNetRouteOrch::cleanupFailedBulkRouteDependencies(const VNetRouteBulkContex
     set<pair<string, NextHopGroupKey>> cleaned_nhg;
     set<pair<string, IpPrefix>> cleaned_fg;
 
-    auto erase_tunnel_route = [this](const string& vnet, const IpPrefix& prefix)
+    auto erase_tunnel_route = [this](const TunnelRouteContext& tr_ctx)
     {
-        auto route_vnet_it = syncd_tunnel_routes_.find(vnet);
+        // Overlay still in hardware: keep syncd_tunnel_routes_ so retry UPDATEs
+        // instead of ADD (ITEM_ALREADY_EXISTS).
+        if (tr_ctx.old_group_has_active_members)
+        {
+            return;
+        }
+        auto route_vnet_it = syncd_tunnel_routes_.find(tr_ctx.vnet);
         if (route_vnet_it == syncd_tunnel_routes_.end())
         {
             return;
         }
-        auto route_it = route_vnet_it->second.find(prefix);
+        auto route_it = route_vnet_it->second.find(tr_ctx.ip_prefix);
         if (route_it != route_vnet_it->second.end())
         {
             route_vnet_it->second.erase(route_it);
@@ -1367,14 +1373,14 @@ void VNetRouteOrch::cleanupFailedBulkRouteDependencies(const VNetRouteBulkContex
             auto fg_vnet_it = syncd_fg_nexthop_groups_.find(tr_ctx.vnet);
             if (fg_vnet_it == syncd_fg_nexthop_groups_.end())
             {
-                erase_tunnel_route(tr_ctx.vnet, tr_ctx.ip_prefix);
+                erase_tunnel_route(tr_ctx);
                 continue;
             }
 
             auto fg_it = fg_vnet_it->second.find(tr_ctx.ip_prefix);
             if (fg_it == fg_vnet_it->second.end())
             {
-                erase_tunnel_route(tr_ctx.vnet, tr_ctx.ip_prefix);
+                erase_tunnel_route(tr_ctx);
                 continue;
             }
             if (fg_it->second.ref_count != 0)
@@ -1389,7 +1395,7 @@ void VNetRouteOrch::cleanupFailedBulkRouteDependencies(const VNetRouteBulkContex
             }
             auto *vrf_obj = vnet_orch_->getTypePtr<VNetVrfObject>(tr_ctx.vnet);
             removeFgNextHopGroup(tr_ctx.vnet, tr_ctx.nhg, tr_ctx.ip_prefix, vrf_obj);
-            erase_tunnel_route(tr_ctx.vnet, tr_ctx.ip_prefix);
+            erase_tunnel_route(tr_ctx);
             continue;
         }
 
@@ -1403,14 +1409,14 @@ void VNetRouteOrch::cleanupFailedBulkRouteDependencies(const VNetRouteBulkContex
         auto vnet_it = syncd_nexthop_groups_.find(tr_ctx.vnet);
         if (vnet_it == syncd_nexthop_groups_.end())
         {
-            erase_tunnel_route(tr_ctx.vnet, tr_ctx.ip_prefix);
+            erase_tunnel_route(tr_ctx);
             continue;
         }
 
         auto nhg_it = vnet_it->second.find(tr_ctx.nhg);
         if (nhg_it == vnet_it->second.end())
         {
-            erase_tunnel_route(tr_ctx.vnet, tr_ctx.ip_prefix);
+            erase_tunnel_route(tr_ctx);
             continue;
         }
         if (nhg_it->second.ref_count != 0)
@@ -1425,6 +1431,11 @@ void VNetRouteOrch::cleanupFailedBulkRouteDependencies(const VNetRouteBulkContex
         }
         auto *vrf_obj = vnet_orch_->getTypePtr<VNetVrfObject>(tr_ctx.vnet);
 
+        if (tr_ctx.nhg.getSize() == 0)
+        {
+            continue;
+        }
+
         if (tr_ctx.nhg.getSize() > 1)
         {
             removeNextHopGroup(tr_ctx.vnet, tr_ctx.nhg, vrf_obj, true, true);
@@ -1438,12 +1449,8 @@ void VNetRouteOrch::cleanupFailedBulkRouteDependencies(const VNetRouteBulkContex
             }
             syncd_nexthop_groups_[tr_ctx.vnet].erase(tr_ctx.nhg);
         }
-        else if (tr_ctx.nhg.getSize() == 0)
-        {
-            syncd_nexthop_groups_[tr_ctx.vnet].erase(tr_ctx.nhg);
-        }
 
-        erase_tunnel_route(tr_ctx.vnet, tr_ctx.ip_prefix);
+        erase_tunnel_route(tr_ctx);
     }
 }
 
@@ -1499,7 +1506,7 @@ void VNetRouteOrch::queueTunnelRoutes()
                 {
                     queueTunnelRouteBulk(tr_ctx, TunnelRouteContext::SaiOp::ADD, nh_id);
                 }
-                else if (nh_id != old_nh_id || tr_ctx.is_next_hop_id_changed)
+                else if (tr_ctx.is_next_hop_id_changed)
                 {
                     queueTunnelRouteBulk(tr_ctx, TunnelRouteContext::SaiOp::UPDATE, nh_id);
                 }
@@ -1519,32 +1526,20 @@ void VNetRouteOrch::queueTunnelRoutes()
 
             if (!active_nhg_info_ptr)
             {
-                // Pre-bulker doRouteTask used operator[] and treated a missing NHG
-                // entry as inactive (no SAI route). Pending NHG placeholders can be
-                // erased when finalize fails, so keep SUCCESS and still run
-                // addTunnelRoutePost/postRouteState.
+                // Resource-full NHG create: keep overlay and STATE_DB, retry SET.
+                SWSS_LOG_WARN("Next hop group missing for tunnel route %s, keep existing overlay and retry",
+                              tr_ctx.ip_prefix.to_string().c_str());
+                tr_ctx.skip_route_post = true;
                 continue;
             }
 
             auto& active_nhg_info = *active_nhg_info_ptr;
-            if (active_nhg_info.active_members.empty() || tr_ctx.nhg.getSize() == 0)
+            if (active_nhg_info.active_members.empty())
             {
-                if (it_route != syncd_tunnel_routes_[tr_ctx.vnet].end())
+                if (it_route != syncd_tunnel_routes_[tr_ctx.vnet].end() &&
+                    tr_ctx.old_group_has_active_members)
                 {
-                    NextHopGroupKey nhg = it_route->second.nhg_key;
-                    auto route_nhg_it = vnet_it->second.find(nhg);
-                    if (tr_ctx.collision)
-                    {
-                        if (!tr_ctx.saved_old_nhg_info.active_members.empty())
-                        {
-                            queueTunnelRouteBulk(tr_ctx, TunnelRouteContext::SaiOp::DEL);
-                        }
-                    }
-                    else if (route_nhg_it != vnet_it->second.end() &&
-                             !route_nhg_it->second.active_members.empty())
-                    {
-                        queueTunnelRouteBulk(tr_ctx, TunnelRouteContext::SaiOp::DEL);
-                    }
+                    queueTunnelRouteBulk(tr_ctx, TunnelRouteContext::SaiOp::DEL);
                 }
                 continue;
             }
@@ -1567,10 +1562,6 @@ void VNetRouteOrch::queueTunnelRoutes()
                 {
                     SWSS_LOG_ERROR("Could not remove existing bgp route for prefix: %s",
                                    prefixSubnet.to_string().c_str());
-                    if (tr_ctx.collision)
-                    {
-                        syncd_nexthop_groups_[tr_ctx.vnet][tr_ctx.old_nhg_key] = tr_ctx.saved_old_nhg_info;
-                    }
                     tr_ctx.object_statuses.front() = SAI_STATUS_FAILURE;
                     continue;
                 }
@@ -1584,8 +1575,7 @@ void VNetRouteOrch::queueTunnelRoutes()
             }
             else if (nh_id != old_nh_id)
             {
-                if (tr_ctx.collision ||
-                    !syncd_nexthop_groups_[tr_ctx.vnet][tr_ctx.old_nhg_key].active_members.empty())
+                if (tr_ctx.old_group_has_active_members)
                 {
                     queueTunnelRouteBulk(tr_ctx, TunnelRouteContext::SaiOp::UPDATE, nh_id);
                 }
@@ -2735,7 +2725,7 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
                 {
                     SWSS_LOG_INFO("Unable to transition from regular to fine-grained ECMP route for VNET %s, prefix %s", vnet.c_str(), ipPrefix.to_string().c_str());
                 }
-                return true;
+                return false;
             }
             active_nhg = nexthops;
             nh_id = syncd_fg_nexthop_groups_[vnet][ipPrefix].next_hop_group_id;
@@ -2751,21 +2741,26 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
                 {
                     SWSS_LOG_INFO("Unable to transition from fine-grained to regular ECMP route for VNET %s, prefix %s", vnet.c_str(), ipPrefix.to_string().c_str());
                 }
-                return true;
+                return false;
             }
             nh_id = syncd_nexthop_groups_[vnet][active_nhg].next_hop_group_id;
         }
 
         sai_object_id_t old_nh_id = SAI_NULL_OBJECT_ID;
+        bool old_group_has_active_members = false;
         if (it_route != syncd_tunnel_routes_[vnet].end())
         {
             if (was_fg)
             {
                 old_nh_id = syncd_fg_nexthop_groups_[vnet][ipPrefix].next_hop_group_id;
+                old_group_has_active_members =
+                    !syncd_fg_nexthop_groups_[vnet][ipPrefix].active_members.empty();
             }
             else
             {
                 old_nh_id = syncd_nexthop_groups_[vnet][old_nhg_key].next_hop_group_id;
+                old_group_has_active_members =
+                    !syncd_nexthop_groups_[vnet][old_nhg_key].active_members.empty();
             }
         }
 
@@ -2775,7 +2770,9 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
             return false;
         }
 
-        bool route_deferred = (nh_id == SAI_NULL_OBJECT_ID);
+        // Size-0 dummy NHG uses a NULL oid for bookkeeping; that is not a pending SAI create.
+        bool route_deferred = (nh_id == SAI_NULL_OBJECT_ID) &&
+                              (is_fg_route || active_nhg.getSize() != 0);
 
         for (auto vr_id : vr_set)
         {
@@ -2798,6 +2795,7 @@ bool VNetRouteOrch::doRouteTask<VNetVrfObject>(const string& vnet, IpPrefix& ipP
             tr_ctx.route_deferred = route_deferred;
             tr_ctx.is_next_hop_id_changed = isNextHopIdChanged;
             tr_ctx.old_nh_id_for_fg = old_nh_id;
+            tr_ctx.old_group_has_active_members = old_group_has_active_members;
         }
     }
     else if (op == DEL_COMMAND)
@@ -5237,6 +5235,7 @@ void VNetRouteOrch::doTask(Consumer &consumer)
         // already-programmed VR routes are left installed, so retry hits
         // ITEM_ALREADY_EXISTS and the NHG delete fails. Needs per-VR rollback.
         bool tunnel_ok = true;
+        bool skip_route_post = false;
         for (auto& tr_ctx : bulk_ctx.tunnel_contexts)
         {
             sai_status_t status = SAI_STATUS_FAILURE;
@@ -5245,14 +5244,16 @@ void VNetRouteOrch::doTask(Consumer &consumer)
                 status = tr_ctx.object_statuses.front();
             }
 
+            if (tr_ctx.skip_route_post)
+            {
+                skip_route_post = true;
+                all_success = false;
+            }
+
             if (status != SAI_STATUS_SUCCESS)
             {
                 SWSS_LOG_ERROR("Tunnel route %s failed (status %d), will retry",
                               tr_ctx.ip_prefix.to_string().c_str(), status);
-                if (tr_ctx.collision)
-                {
-                    syncd_nexthop_groups_[tr_ctx.vnet][tr_ctx.old_nhg_key] = tr_ctx.saved_old_nhg_info;
-                }
                 all_success = false;
                 tunnel_ok = false;
                 break;
@@ -5292,7 +5293,7 @@ void VNetRouteOrch::doTask(Consumer &consumer)
         {
             cleanupFailedBulkRouteDependencies(bulk_ctx);
         }
-        else if (!bulk_ctx.tunnel_contexts.empty())
+        else if (!skip_route_post && !bulk_ctx.tunnel_contexts.empty())
         {
             const auto& tr_ctx = bulk_ctx.tunnel_contexts.front();
             bool post_success = tr_ctx.is_set_op ? addTunnelRoutePost(tr_ctx)

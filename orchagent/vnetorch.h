@@ -538,10 +538,10 @@ struct TunnelRouteContext
     bool is_type_transition = false;
     bool route_deferred = false;
     bool is_next_hop_id_changed = false;
-    bool collision = false;
+    bool old_group_has_active_members = false;
+    bool skip_route_post = false;
     sai_object_id_t old_nh_id_for_fg = SAI_NULL_OBJECT_ID;
     NextHopGroupKey old_nhg_key;
-    NextHopGroupInfo saved_old_nhg_info;
     TunnelRouteContext(const string& vnet_name, sai_object_id_t vrf_id, const IpPrefix& pfx,
                        bool set_op, SaiOp op)
         : ip_prefix(pfx), vnet(vnet_name), vr_id(vrf_id), nhg("", true), primary("", true), secondary("", true),

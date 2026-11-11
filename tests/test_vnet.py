@@ -3668,6 +3668,326 @@ class TestVnetOrch(object):
         delete_vxlan_tunnel(dvs, tunnel_name)
         vnet_obj.check_del_vxlan_tunnel(dvs)
 
+    '''
+    FG to regular ECMP with different endpoints. The ASIC route key must be
+    reused (UPDATE, not ADD) and the group must become a regular ECMP NHG.
+    '''
+    def test_vnet_fg_to_regular_diff_endpoints(self, dvs, testlog):
+        self.setup_db(dvs)
+        vnet_obj = self.get_vnet_obj()
+        asic_db = dvs.get_asic_db()
+        state_db = dvs.get_state_db()
+
+        tunnel_name = 'tunnel_fg2reg_diff'
+        vnet_name = 'VnetFg2RegDiff'
+        prefix = "103.100.1.0/24"
+        bucket_size = 30
+        fg_eps = '139.0.0.1,139.0.0.2,139.0.0.3'
+        fg_macs = '00:12:34:56:78:cA,00:12:34:56:78:cB,00:12:34:56:78:cC'
+        reg_eps = '139.0.0.4,139.0.0.5,139.0.0.6'
+        reg_macs = '00:12:34:56:78:cD,00:12:34:56:78:cE,00:12:34:56:78:cF'
+
+        vnet_obj.fetch_exist_entries(dvs)
+        initial_nhop_count = len(asic_db.get_keys(vnet_obj.ASIC_NEXT_HOP))
+
+        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.13')
+        create_vnet_entry(dvs, vnet_name, tunnel_name, '100039', "")
+
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, '100039')
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '10.10.10.13')
+
+        vnet_obj.fetch_exist_entries(dvs)
+        vr_id = vnet_obj.vr_map[vnet_name]['ing']
+
+        create_vnet_routes(dvs, prefix, vnet_name, fg_eps, fg_macs, consistent_hashing_buckets=bucket_size)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, bucket_size)
+        fg_nhgid = test_fgnhg.validate_asic_nhg_fine_grained_ecmp(asic_db, prefix, bucket_size, vr_id)
+        asic_rt_key = test_fgnhg.get_asic_route_key(asic_db, prefix, vr_id)
+        check_state_db_routes(dvs, vnet_name, prefix, fg_eps.split(','))
+
+        create_vnet_routes(dvs, prefix, vnet_name, reg_eps, reg_macs)
+        time.sleep(2)
+
+        assert test_fgnhg.get_asic_route_key(asic_db, prefix, vr_id) == asic_rt_key
+        reg_nhgid = test_fgnhg.validate_asic_nhg_regular_ecmp(asic_db, prefix)
+        assert reg_nhgid != fg_nhgid
+        check_state_db_routes(dvs, vnet_name, prefix, reg_eps.split(','))
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, 3)
+        state_db.wait_for_n_keys("FG_ROUTE_TABLE", 0)
+
+        delete_vnet_routes(dvs, prefix, vnet_name)
+        time.sleep(2)
+
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, [prefix])
+        check_remove_state_db_routes(dvs, vnet_name, prefix)
+        asic_db.wait_for_deleted_entry(test_fgnhg.ASIC_ROUTE_TB, asic_rt_key)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, 0)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG, 0)
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count)
+
+        delete_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_name)
+        delete_vxlan_tunnel(dvs, tunnel_name)
+        vnet_obj.check_del_vxlan_tunnel(dvs)
+
+    '''
+    FG to regular ECMP with the same endpoints. Shared NHG key collision
+    case: the existing ASIC route must be UPDATEd, not ADDed.
+    '''
+    def test_vnet_fg_to_regular_same_endpoints(self, dvs, testlog):
+        self.setup_db(dvs)
+        vnet_obj = self.get_vnet_obj()
+        asic_db = dvs.get_asic_db()
+        state_db = dvs.get_state_db()
+
+        tunnel_name = 'tunnel_fg2reg_same'
+        vnet_name = 'VnetFg2RegSame'
+        prefix = "103.100.2.0/24"
+        bucket_size = 30
+        endpoints = '140.0.0.1,140.0.0.2,140.0.0.3'
+        macs = '00:12:34:56:78:dA,00:12:34:56:78:dB,00:12:34:56:78:dC'
+
+        vnet_obj.fetch_exist_entries(dvs)
+        initial_nhop_count = len(asic_db.get_keys(vnet_obj.ASIC_NEXT_HOP))
+
+        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.14')
+        create_vnet_entry(dvs, vnet_name, tunnel_name, '100040', "")
+
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, '100040')
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '10.10.10.14')
+
+        vnet_obj.fetch_exist_entries(dvs)
+        vr_id = vnet_obj.vr_map[vnet_name]['ing']
+
+        create_vnet_routes(dvs, prefix, vnet_name, endpoints, macs, consistent_hashing_buckets=bucket_size)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, bucket_size)
+        fg_nhgid = test_fgnhg.validate_asic_nhg_fine_grained_ecmp(asic_db, prefix, bucket_size, vr_id)
+        asic_rt_key = test_fgnhg.get_asic_route_key(asic_db, prefix, vr_id)
+        check_state_db_routes(dvs, vnet_name, prefix, endpoints.split(','))
+
+        create_vnet_routes(dvs, prefix, vnet_name, endpoints, macs)
+        time.sleep(2)
+
+        assert test_fgnhg.get_asic_route_key(asic_db, prefix, vr_id) == asic_rt_key
+        reg_nhgid = test_fgnhg.validate_asic_nhg_regular_ecmp(asic_db, prefix)
+        assert reg_nhgid != fg_nhgid
+        check_state_db_routes(dvs, vnet_name, prefix, endpoints.split(','))
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, 3)
+        state_db.wait_for_n_keys("FG_ROUTE_TABLE", 0)
+
+        delete_vnet_routes(dvs, prefix, vnet_name)
+        time.sleep(2)
+
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, [prefix])
+        check_remove_state_db_routes(dvs, vnet_name, prefix)
+        asic_db.wait_for_deleted_entry(test_fgnhg.ASIC_ROUTE_TB, asic_rt_key)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, 0)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG, 0)
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count)
+
+        delete_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_name)
+        delete_vxlan_tunnel(dvs, tunnel_name)
+        vnet_obj.check_del_vxlan_tunnel(dvs)
+
+    '''
+    Overlay SET to a new ECMP group must UPDATE the existing ASIC route
+    (same route key, no extra ADD). DVS cannot inject bulk SET TABLE_FULL;
+    this is the UPDATE-in-place contract retry must use after that failure.
+    '''
+    def test_vnet_overlay_update_reuses_route(self, dvs, testlog):
+        self.setup_db(dvs)
+        vnet_obj = self.get_vnet_obj()
+        asic_db = dvs.get_asic_db()
+
+        tunnel_name = 'tunnel_ovl_upd'
+        vnet_name = 'VnetOvlUpd'
+        prefix = "103.100.3.0/24"
+        old_eps = '141.0.0.1,141.0.0.2,141.0.0.3'
+        new_eps = '141.0.0.4,141.0.0.5,141.0.0.6'
+        old_macs = '00:12:34:56:78:eA,00:12:34:56:78:eB,00:12:34:56:78:eC'
+        new_macs = '00:12:34:56:78:eD,00:12:34:56:78:eE,00:12:34:56:78:eF'
+
+        vnet_obj.fetch_exist_entries(dvs)
+        initial_nhop_count = len(asic_db.get_keys(vnet_obj.ASIC_NEXT_HOP))
+
+        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.15')
+        create_vnet_entry(dvs, vnet_name, tunnel_name, '100041', "")
+
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, '100041')
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '10.10.10.15')
+
+        vnet_obj.fetch_exist_entries(dvs)
+        vr_id = vnet_obj.vr_map[vnet_name]['ing']
+
+        create_vnet_routes(dvs, prefix, vnet_name, old_eps, old_macs)
+        old_nhgid = test_fgnhg.validate_asic_nhg_regular_ecmp(asic_db, prefix)
+        asic_rt_key = test_fgnhg.get_asic_route_key(asic_db, prefix, vr_id)
+        check_state_db_routes(dvs, vnet_name, prefix, old_eps.split(','))
+
+        create_vnet_routes(dvs, prefix, vnet_name, new_eps, new_macs)
+        time.sleep(2)
+
+        assert test_fgnhg.get_asic_route_key(asic_db, prefix, vr_id) == asic_rt_key
+        new_nhgid = test_fgnhg.validate_asic_nhg_regular_ecmp(asic_db, prefix)
+        assert new_nhgid != old_nhgid
+        check_state_db_routes(dvs, vnet_name, prefix, new_eps.split(','))
+        asic_db.wait_for_deleted_entry(test_fgnhg.ASIC_NHG, old_nhgid)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, 3)
+
+        delete_vnet_routes(dvs, prefix, vnet_name)
+        time.sleep(2)
+
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, [prefix])
+        check_remove_state_db_routes(dvs, vnet_name, prefix)
+        asic_db.wait_for_deleted_entry(test_fgnhg.ASIC_ROUTE_TB, asic_rt_key)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, 0)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG, 0)
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count)
+
+        delete_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_name)
+        delete_vxlan_tunnel(dvs, tunnel_name)
+        vnet_obj.check_del_vxlan_tunnel(dvs)
+
+    '''
+    Overlay SET onto another prefix's group must UPDATE the first route in
+    place and leave the peer route on the shared group. DVS cannot inject
+    bulk SET TABLE_FULL; retry after that failure must not ADD.
+    '''
+    def test_vnet_overlay_update_onto_shared_group(self, dvs, testlog):
+        self.setup_db(dvs)
+        vnet_obj = self.get_vnet_obj()
+        asic_db = dvs.get_asic_db()
+
+        tunnel_name = 'tunnel_ovl_share'
+        vnet_name = 'VnetOvlShare'
+        prefix_a = "103.100.4.0/24"
+        prefix_b = "103.100.5.0/24"
+        eps_a = '142.0.0.1,142.0.0.2,142.0.0.3'
+        eps_b = '142.0.0.4,142.0.0.5,142.0.0.6'
+        macs_a = '00:12:34:56:78:fA,00:12:34:56:78:fB,00:12:34:56:78:fC'
+        macs_b = '00:12:34:56:78:fD,00:12:34:56:78:fE,00:12:34:56:78:fF'
+
+        vnet_obj.fetch_exist_entries(dvs)
+        initial_nhop_count = len(asic_db.get_keys(vnet_obj.ASIC_NEXT_HOP))
+
+        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.16')
+        create_vnet_entry(dvs, vnet_name, tunnel_name, '100042', "")
+
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, '100042')
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '10.10.10.16')
+
+        vnet_obj.fetch_exist_entries(dvs)
+        vr_id = vnet_obj.vr_map[vnet_name]['ing']
+
+        create_vnet_routes(dvs, prefix_a, vnet_name, eps_a, macs_a)
+        create_vnet_routes(dvs, prefix_b, vnet_name, eps_b, macs_b)
+        nhg_a = test_fgnhg.validate_asic_nhg_regular_ecmp(asic_db, prefix_a)
+        nhg_b = test_fgnhg.validate_asic_nhg_regular_ecmp(asic_db, prefix_b)
+        assert nhg_a != nhg_b
+        key_a = test_fgnhg.get_asic_route_key(asic_db, prefix_a, vr_id)
+        key_b = test_fgnhg.get_asic_route_key(asic_db, prefix_b, vr_id)
+        check_state_db_routes(dvs, vnet_name, prefix_a, eps_a.split(','))
+        check_state_db_routes(dvs, vnet_name, prefix_b, eps_b.split(','))
+
+        create_vnet_routes(dvs, prefix_a, vnet_name, eps_b, macs_b)
+        time.sleep(2)
+
+        assert test_fgnhg.get_asic_route_key(asic_db, prefix_a, vr_id) == key_a
+        assert test_fgnhg.get_asic_route_key(asic_db, prefix_b, vr_id) == key_b
+        assert test_fgnhg.validate_asic_nhg_regular_ecmp(asic_db, prefix_a) == nhg_b
+        assert test_fgnhg.validate_asic_nhg_regular_ecmp(asic_db, prefix_b) == nhg_b
+        check_state_db_routes(dvs, vnet_name, prefix_a, eps_b.split(','))
+        check_state_db_routes(dvs, vnet_name, prefix_b, eps_b.split(','))
+        asic_db.wait_for_deleted_entry(test_fgnhg.ASIC_NHG, nhg_a)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, 3)
+
+        delete_vnet_routes(dvs, prefix_a, vnet_name)
+        delete_vnet_routes(dvs, prefix_b, vnet_name)
+        time.sleep(2)
+
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, [prefix_a, prefix_b])
+        check_remove_state_db_routes(dvs, vnet_name, prefix_a)
+        check_remove_state_db_routes(dvs, vnet_name, prefix_b)
+        asic_db.wait_for_deleted_entry(test_fgnhg.ASIC_ROUTE_TB, key_a)
+        asic_db.wait_for_deleted_entry(test_fgnhg.ASIC_ROUTE_TB, key_b)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, 0)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG, 0)
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count)
+
+        delete_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_name)
+        delete_vxlan_tunnel(dvs, tunnel_name)
+        vnet_obj.check_del_vxlan_tunnel(dvs)
+
+    '''
+    Regular to fine-grained overlay SET must UPDATE the existing ASIC route
+    onto the FG group. DVS cannot inject bulk SET TABLE_FULL; retry after
+    that failure must not ADD a prefix still in hardware.
+    '''
+    def test_vnet_regular_to_fg(self, dvs, testlog):
+        self.setup_db(dvs)
+        vnet_obj = self.get_vnet_obj()
+        asic_db = dvs.get_asic_db()
+        state_db = dvs.get_state_db()
+
+        tunnel_name = 'tunnel_reg2fg'
+        vnet_name = 'VnetReg2Fg'
+        prefix = "103.100.6.0/24"
+        bucket_size = 30
+        endpoints = '143.0.0.1,143.0.0.2,143.0.0.3'
+        macs = '00:12:34:56:78:aA,00:12:34:56:78:aB,00:12:34:56:78:aC'
+
+        vnet_obj.fetch_exist_entries(dvs)
+        initial_nhop_count = len(asic_db.get_keys(vnet_obj.ASIC_NEXT_HOP))
+
+        create_vxlan_tunnel(dvs, tunnel_name, '10.10.10.17')
+        create_vnet_entry(dvs, vnet_name, tunnel_name, '100043', "")
+
+        vnet_obj.check_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_vxlan_tunnel_entry(dvs, tunnel_name, vnet_name, '100043')
+        vnet_obj.check_vxlan_tunnel(dvs, tunnel_name, '10.10.10.17')
+
+        vnet_obj.fetch_exist_entries(dvs)
+        vr_id = vnet_obj.vr_map[vnet_name]['ing']
+
+        create_vnet_routes(dvs, prefix, vnet_name, endpoints, macs)
+        regular_nhgid = test_fgnhg.validate_asic_nhg_regular_ecmp(asic_db, prefix)
+        asic_rt_key = test_fgnhg.get_asic_route_key(asic_db, prefix, vr_id)
+        check_state_db_routes(dvs, vnet_name, prefix, endpoints.split(','))
+
+        create_vnet_routes(dvs, prefix, vnet_name, endpoints, macs, consistent_hashing_buckets=bucket_size)
+        time.sleep(2)
+
+        assert test_fgnhg.get_asic_route_key(asic_db, prefix, vr_id) == asic_rt_key
+        fg_nhgid = test_fgnhg.validate_asic_nhg_fine_grained_ecmp(asic_db, prefix, bucket_size, vr_id)
+        assert fg_nhgid != regular_nhgid
+        check_state_db_routes(dvs, vnet_name, prefix, endpoints.split(','))
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, bucket_size)
+        asic_db.wait_for_deleted_entry(test_fgnhg.ASIC_NHG, regular_nhgid)
+        state_db.wait_for_n_keys("FG_ROUTE_TABLE", 1)
+
+        delete_vnet_routes(dvs, prefix, vnet_name)
+        time.sleep(2)
+
+        vnet_obj.check_del_vnet_routes(dvs, vnet_name, [prefix])
+        check_remove_state_db_routes(dvs, vnet_name, prefix)
+        asic_db.wait_for_deleted_entry(test_fgnhg.ASIC_ROUTE_TB, asic_rt_key)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG_MEMB, 0)
+        asic_db.wait_for_n_keys(test_fgnhg.ASIC_NHG, 0)
+        asic_db.wait_for_n_keys(vnet_obj.ASIC_NEXT_HOP, initial_nhop_count)
+        state_db.wait_for_n_keys("FG_ROUTE_TABLE", 0)
+
+        delete_vnet_entry(dvs, vnet_name)
+        vnet_obj.check_del_vnet_entry(dvs, vnet_name)
+        delete_vxlan_tunnel(dvs, tunnel_name)
+        vnet_obj.check_del_vxlan_tunnel(dvs)
+
     """
     IP2Me link-local trap route for VNET VR
 
