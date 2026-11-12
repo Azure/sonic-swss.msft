@@ -353,8 +353,6 @@ tests_teamsyncd_CPPFLAGS = $(DBGFLAGS) $(AM_CFLAGS) $(CFLAGS_COMMON) $(CFLAGS_GT
 tests_teamsyncd_LDADD = $(LDADD_GTEST) $(LDADD_SAI) -lnl-genl-3 \
         -lswsscommon -ldl -lhiredis -lgtest -lgtest_main -lpthread -lteam -lteamdctl -lnl-route-3
 
-LOG_DRIVER = $(top_srcdir)/run-gtest-suite.py
-
 ## vnetmgrd unit tests
 
 tests_vnetmgrd_SOURCES = vnetmgrd/vnetmgr_ut.cpp \
